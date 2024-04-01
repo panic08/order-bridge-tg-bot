@@ -11,4 +11,8 @@ import org.springframework.context.annotation.Configuration;
 @Setter
 public class TelegramBotProperty {
     private String apiKey;
+
+    private String channelUrl;
+
+    private Long channelChatId;
 }
