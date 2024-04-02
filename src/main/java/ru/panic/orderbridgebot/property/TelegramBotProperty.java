@@ -14,5 +14,7 @@ public class TelegramBotProperty {
 
     private String channelUrl;
 
+    private String botUrl;
+
     private Long channelChatId;
 }

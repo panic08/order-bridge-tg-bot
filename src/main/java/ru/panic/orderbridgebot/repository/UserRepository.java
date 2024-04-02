@@ -12,4 +12,7 @@ import java.util.Optional;
 public interface UserRepository extends CrudRepository<User, Long> {
     @Query("SELECT u.* FROM users_table u WHERE u.telegram_id = :telegramId")
     Optional<User> findByTelegramId(@Param("telegramId") long telegramId);
+
+    @Query("SELECT u.telegram_id FROM users_table u WHERE u.id = :id")
+    long findTelegramIdById(@Param("id") long id);
 }

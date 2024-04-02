@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
+import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.DeleteMessage;
@@ -20,6 +21,7 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.Keyboard
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import ru.panic.orderbridgebot.bot.callback.BackCallback;
 import ru.panic.orderbridgebot.bot.callback.CustomerCallback;
+import ru.panic.orderbridgebot.bot.callback.UserCallback;
 import ru.panic.orderbridgebot.bot.pojo.CreateOrderObject;
 import ru.panic.orderbridgebot.model.Order;
 import ru.panic.orderbridgebot.model.Prefix;
@@ -95,11 +97,18 @@ public class TelegramBot extends TelegramLongPollingBot {
                                     .telegramId(principalTelegramId)
                                     .balance(0d)
                                     .role(UserRole.CUSTOMER)
+                                    .executorStatus(null)
+                                    .executorPrefixes("[]")
                                     .registeredAt(System.currentTimeMillis())
                                     .build();
 
                             return userRepository.save(newUser);
                         });
+
+                if (text.contains("/start") && text.split(" ").length > 1) {
+                    handleTakeOrderMessage(chatId, messageId, principalUser, Long.parseLong(text.split(" ")[1]));
+                    return;
+                }
 
                 switch (text) {
                     case "/start" -> {
@@ -116,6 +125,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                         handleCreateOrderMessage(chatId);
                         return;
                     }
+
+                    case "\uD83D\uDCCB Мои заказы" -> {
+                        handleCreateGetAllOrderMessage(chatId, principalUser, 1);
+                        return;
+                    }
                 }
 
                 if (createOrderSteps.get(principalUser.getId()) != null) {
@@ -123,12 +137,13 @@ public class TelegramBot extends TelegramLongPollingBot {
                     return;
                 }
 
-                handleUnknownMessage(chatId);
+                handleUnknownMessage(chatId, principalUser);
 
                 return;
             } else if (update.hasCallbackQuery()) {
                 long chatId = update.getCallbackQuery().getMessage().getChatId();
                 int messageId = update.getCallbackQuery().getMessage().getMessageId();
+                String callbackQueryId = update.getCallbackQuery().getId();
                 String data = update.getCallbackQuery().getData();
                 long principalTelegramId = update.getCallbackQuery().getFrom().getId();
 
@@ -145,6 +160,12 @@ public class TelegramBot extends TelegramLongPollingBot {
                         });
 
                 switch (data) {
+                    case "answerQuery" -> {
+                        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                                .callbackQueryId(callbackQueryId)
+                                .build());
+                        return;
+                    }
                     case CustomerCallback.CREATE_ORDER_CALLBACK -> {
                         createOrderSteps.put(principalUser.getId(), CreateOrderObject.builder()
                                 .step(1)
@@ -217,11 +238,17 @@ public class TelegramBot extends TelegramLongPollingBot {
                         handleCreateOrderProcess(chatId, null, principalUser, null);
                     }
 
+
                     case BackCallback.BACK_TO_MAIN_CREATE_ORDER_CALLBACK -> {
                         createOrderSteps.remove(principalUser.getId());
 
                         handleEditCreateOrderMessage(chatId, messageId);
 
+                        return;
+                    }
+
+                    case BackCallback.BACK_TO_GET_ALL_ORDER_CALLBACK -> {
+                        handleEditGetAllOrderMessage(chatId, messageId, principalUser, 1);
                         return;
                     }
                 }
@@ -248,6 +275,29 @@ public class TelegramBot extends TelegramLongPollingBot {
                     createOrderSteps.put(principalUser.getId(), createOrderObject);
 
                     handleCreateOrderProcess(chatId, null, principalUser, null);
+
+                    return;
+                }
+
+                if (data.contains(UserCallback.GET_CURRENT_ORDER_CALLBACK)) {
+                    long orderId = Long.parseLong(data.split(" ")[4]);
+
+                    handleEditGetCurrentOrderMessage(chatId, messageId, orderId, principalUser);
+                    return;
+                }
+
+                if (data.contains(CustomerCallback.UP_ORDER_CALLBACK)) {
+                    long orderId = Long.parseLong(data.split(" ")[3]);
+
+                    handleUpOrder(chatId, callbackQueryId, orderId);
+                    return;
+                }
+
+                if (data.contains(UserCallback.GET_ALL_ORDER_CALLBACK)) {
+                    int page = Integer.parseInt(data.split(" ")[4]);
+
+                    handleEditGetAllOrderMessage(chatId, messageId, principalUser, page);
+                    return;
                 }
 
             }
@@ -255,10 +305,11 @@ public class TelegramBot extends TelegramLongPollingBot {
         });
     }
 
-    private void handleUnknownMessage(long chatId) {
+    private void handleUnknownMessage(long chatId, User principalUser) {
         SendMessage sendMessage = SendMessage.builder()
                 .text("\uD83C\uDF10 <b>Такой команды не существует. Попробуйте что-нибудь из меню!</b>")
                 .chatId(chatId)
+                .replyMarkup(getDefaultReplyKeyboardMarkup(principalUser))
                 .parseMode("html")
                 .build();
 
@@ -297,16 +348,26 @@ public class TelegramBot extends TelegramLongPollingBot {
             case ADMIN -> principalUserRole = "Администратор";
         }
 
-        long principalUserOrdersCount = orderRepository.countByUserId(principalUser.getId());
+        long principalUserOrdersCount = orderRepository.countByCustomerUserIdOrExecutorUserId(principalUser.getId(),
+                principalUser.getId());
+
+        String executorStatusString = null;
+
+        if (principalUser.getRole().equals(UserRole.EXECUTOR)) {
+            executorStatusString = "ℹ\uFE0F <b>Статус исполнителя:</b> <code>" + principalUser.getExecutorStatus() + "</code>\n\n";
+        } else {
+            executorStatusString = "";
+        }
 
         SendMessage message = SendMessage.builder()
                 .text("\uD83D\uDC64 <b>Профиль</b>\n\n"
-                + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
-                + "\uD83E\uDEAA <b>Имя:</b> <code>" + username + "</code>\n"
-                + "\uD83C\uDFAD <b>Роль:</b> <code>" + principalUserRole + "</code>\n\n"
-                + "\uD83D\uDCB3 <b>Баланс:</b> <code>" + principalUser.getBalance() + "$</code>\n\n"
-                + "\uD83D\uDECD <b>Количество открытых заказов:</b> <code>" + principalUserOrdersCount + "</code>\n\n"
-                + "\uD83D\uDD52 <b>Дата регистрации:</b> <code>" + formattedDateTime + "</code>")
+                        + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
+                        + "\uD83E\uDEAA <b>Имя:</b> <code>" + username + "</code>\n"
+                        + "\uD83C\uDFAD <b>Роль:</b> <code>" + principalUserRole + "</code>\n"
+                        + executorStatusString
+                        + "\uD83D\uDCB3 <b>Баланс:</b> <code>" + principalUser.getBalance() + "$</code>\n\n"
+                        + "\uD83D\uDECD <b>Количество открытых заказов:</b> <code>" + principalUserOrdersCount + "</code>\n\n"
+                        + "\uD83D\uDD52 <b>Дата регистрации:</b> <code>" + formattedDateTime + "</code>")
                 .chatId(chatId)
                 .parseMode("html")
                 .build();
@@ -584,76 +645,17 @@ public class TelegramBot extends TelegramLongPollingBot {
                     budget = Double.parseDouble(text);
                 }
 
-                StringBuilder prefixesString = new StringBuilder();
-
-                for (int i = 0; i < createOrderObject.getPrefixes().size(); i++) {
-                    if (i == createOrderObject.getPrefixes().size() - 1) {
-                        prefixesString.append(createOrderObject.getPrefixes().get(i));
-                    } else {
-                        prefixesString.append(createOrderObject.getPrefixes().get(i)).append(", ");
-                    }
-                }
-
-                StringBuilder textForTelegramChannel = new StringBuilder();
-
-                textForTelegramChannel.append("\uD83D\uDD35 <b>Активен</b>\n");
-
-                if (createOrderObject.getPrefixes().isEmpty()) {
-                    textForTelegramChannel.append("\n<b>").append(createOrderObject.getTitle()).append("</b>\n\n")
-                            .append(createOrderObject.getDescription()).append("\n\n");
-                } else {
-                    textForTelegramChannel.append("\uD83C\uDFA9 <b>").append(prefixesString).append("</b>\n\n")
-                            .append("<b>").append(createOrderObject.getTitle()).append("</b>\n\n")
-                            .append(createOrderObject.getDescription()).append("\n\n");
-                }
-
-                if (budget == null) {
-                    textForTelegramChannel.append("<b>Бюджет:</b> <code>").append("Договорный").append("</code>");
-                } else {
-                    textForTelegramChannel.append("<b>Бюджет:</b> <code>").append(budget).append("$</code>");
-                }
-
-                Integer telegramChannelMessageId = null;
-
-                try {
-                    InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
-
-                    InlineKeyboardButton takeButton = InlineKeyboardButton.builder()
-                            .url("https://t.me/panic08")
-                            .text("Беру")
-                            .build();
-
-                    List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
-
-                    keyboardButtonsRow1.add(takeButton);
-
-                    List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
-
-                    rowList.add(keyboardButtonsRow1);
-
-                    inlineKeyboardMarkup.setKeyboard(rowList);
-
-                    telegramChannelMessageId = execute(SendMessage.builder()
-                            .text(textForTelegramChannel.toString())
-                            .chatId(telegramBotProperty.getChannelChatId())
-                            .replyMarkup(inlineKeyboardMarkup)
-                            .parseMode("html")
-                            .build()).getMessageId();
-                } catch (TelegramApiException e) {
-                    log.warn(e.getMessage());
-                }
-
                 Order order = null;
 
                 try {
                     order = Order.builder()
                             .orderStatus(OrderStatus.ACTIVE)
-                            .userId(principalUser.getId())
+                            .customerUserId(principalUser.getId())
                             .title(createOrderObject.getTitle())
                             .description(createOrderObject.getDescription())
-                            .telegramChannelMessageId(telegramChannelMessageId)
                             .budget(budget)
                             .prefixes(objectMapper.writeValueAsString(createOrderObject.getPrefixes()))
+                            .lastUppedAt(System.currentTimeMillis())
                             .createdAt(System.currentTimeMillis())
                             .build();
                 } catch (JsonProcessingException e) {
@@ -661,6 +663,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                 }
 
                 assert order != null;
+                orderRepository.save(order);
+
+                order.setTelegramChannelMessageId(generateOrderTextAndSend(order.getId(), createOrderObject.getTitle(),
+                        createOrderObject.getDescription(), budget, createOrderObject.getPrefixes()));
+
                 orderRepository.save(order);
 
                 InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
@@ -689,12 +696,412 @@ public class TelegramBot extends TelegramLongPollingBot {
                                 + "Поздравляем! Ваш заказ был успешно опубликован\n\n"
                                 + "\uD83C\uDF89 <b>Теперь наши исполнители могут просматривать его и предлагать свои услуги</b>\n\n"
                                 + "\uD83D\uDCBC Если у вас есть какие-либо дополнительные вопросы или требуется изменение заказа, не стесняйтесь обращаться к нам\n\n"
-                                + "Благодарим за использование нашего сервиса! Удачи в реализации вашего проекта! \uD83C\uDF1F")
+                                + "<b>Благодарим за использование нашего сервиса! Удачи в реализации вашего проекта!</b> \uD83C\uDF1F")
                         .build();
 
                 handleEditMessageText(editMessageText);
             }
         }
+    }
+
+    private void handleCreateGetAllOrderMessage(long chatId, User principalUser, int page) {
+        List<Order> principalOrders = orderRepository
+                .findAllByCustomerUserIdOrExecutorUserIdWithOffsetOrderByCreatedAtDesc(principalUser.getId(),
+                        principalUser.getId(),
+                        6,
+                        6 * (page - 1));
+
+        long principalOrdersCount = orderRepository.countByCustomerUserIdOrExecutorUserId(principalUser.getId(),
+                principalUser.getId());
+
+        long maxPage = (long) Math.ceil((double) principalOrdersCount / 6);
+
+        if (maxPage == 0) {
+            maxPage = 1;
+        }
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        for (Order order : principalOrders) {
+            String orderStatusString = null;
+
+            switch (order.getOrderStatus()) {
+                case ACTIVE -> orderStatusString = "Активный";
+                case IN_PROGRESS -> orderStatusString = "В разработке";
+                case COMPLETED -> orderStatusString = "Завершен";
+            }
+
+            List<InlineKeyboardButton> orderKeyboardButtonsRow = new ArrayList<>();
+
+            InlineKeyboardButton orderButton = InlineKeyboardButton.builder()
+                    .callbackData(UserCallback.GET_CURRENT_ORDER_CALLBACK + " " + order.getId())
+                    .text(order.getTitle() + " / " + (order.getBudget() == null ? "Договорный" : order.getBudget() + "$")
+                            + " / " + orderStatusString)
+                    .build();
+
+            orderKeyboardButtonsRow.add(orderButton);
+
+            rowList.add(orderKeyboardButtonsRow);
+        }
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        if (page != 1) {
+            InlineKeyboardButton prevButton = InlineKeyboardButton.builder()
+                    .callbackData(UserCallback.GET_ALL_ORDER_CALLBACK + " " + (page - 1))
+                    .text("⏪ Предыдущая")
+                    .build();
+
+            keyboardButtonsRow1.add(prevButton);
+        }
+
+        InlineKeyboardButton currentButton = InlineKeyboardButton.builder()
+                .callbackData("answerQuery")
+                .text("Страница " + page + " / " + maxPage)
+                .build();
+
+        keyboardButtonsRow1.add(currentButton);
+
+        if (page != maxPage) {
+            InlineKeyboardButton nextButton = InlineKeyboardButton.builder()
+                    .callbackData(UserCallback.GET_ALL_ORDER_CALLBACK + " " + (page + 1))
+                    .text("⏩ Следующая")
+                    .build();
+
+            keyboardButtonsRow1.add(nextButton);
+        }
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        SendMessage sendMessage = SendMessage.builder()
+                .text("\uD83D\uDCCB <b>Мои заказы</b>\n\n"
+                + "<b>Добро пожаловать в раздел ваших заказов!</b> Здесь вы можете просматривать и управлять своими активными заказами\n\n"
+                + "\uD83D\uDCC4 Для просмотра всех ваших заказов, выберите соответствующую страницу с помощью кнопок ниже\n\n"
+                + "\uD83D\uDEE0\uFE0F <b>Если у вас есть какие-либо вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                .chatId(chatId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build();
+
+        handleSendTextMessage(sendMessage);
+    }
+
+    private void handleEditGetAllOrderMessage(long chatId, int messageId, User principalUser, int page) {
+        List<Order> principalOrders = orderRepository
+                .findAllByCustomerUserIdOrExecutorUserIdWithOffsetOrderByCreatedAtDesc(principalUser.getId(),
+                        principalUser.getId(),
+                        6,
+                        6 * (page - 1));
+
+        long principalOrdersCount = orderRepository.countByCustomerUserIdOrExecutorUserId(principalUser.getId(),
+                principalUser.getId());
+
+        long maxPage = (long) Math.ceil((double) principalOrdersCount / 6);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        for (Order order : principalOrders) {
+            String orderStatusString = null;
+
+            switch (order.getOrderStatus()) {
+                case ACTIVE -> orderStatusString = "Активный";
+                case IN_PROGRESS -> orderStatusString = "В разработке";
+                case COMPLETED -> orderStatusString = "Завершен";
+            }
+
+            List<InlineKeyboardButton> orderKeyboardButtonsRow = new ArrayList<>();
+
+            InlineKeyboardButton orderButton = InlineKeyboardButton.builder()
+                    .callbackData(UserCallback.GET_CURRENT_ORDER_CALLBACK + " " + order.getId())
+                    .text(order.getTitle() + " / " + (order.getBudget() == null ? "Договорный" : order.getBudget() + "$")
+                            + " / " + orderStatusString)
+                    .build();
+
+            orderKeyboardButtonsRow.add(orderButton);
+
+            rowList.add(orderKeyboardButtonsRow);
+        }
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        if (page != 1) {
+            InlineKeyboardButton prevButton = InlineKeyboardButton.builder()
+                    .callbackData(UserCallback.GET_ALL_ORDER_CALLBACK + " " + (page - 1))
+                    .text("⏪ Предыдущая")
+                    .build();
+
+            keyboardButtonsRow1.add(prevButton);
+        }
+
+        InlineKeyboardButton currentButton = InlineKeyboardButton.builder()
+                .callbackData("answerQuery")
+                .text("Страница " + page + " / " + maxPage)
+                .build();
+
+        keyboardButtonsRow1.add(currentButton);
+
+        if (page != maxPage) {
+            InlineKeyboardButton nextButton = InlineKeyboardButton.builder()
+                    .callbackData(UserCallback.GET_ALL_ORDER_CALLBACK + " " + (page + 1))
+                    .text("⏩ Следующая")
+                    .build();
+
+            keyboardButtonsRow1.add(nextButton);
+        }
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .text("\uD83D\uDCCB <b>Мои заказы</b>\n\n"
+                        + "<b>Добро пожаловать в раздел ваших заказов!</b> Здесь вы можете просматривать и управлять своими активными заказами\n\n"
+                        + "\uD83D\uDCC4 Для просмотра всех ваших заказов, выберите соответствующую страницу с помощью кнопок ниже\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас есть какие-либо вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                .chatId(chatId)
+                .messageId(messageId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
+    private void handleEditGetCurrentOrderMessage(long chatId, int messageId, long orderId, User principalUser) {
+        Order currentOrder = orderRepository.findById(orderId)
+                .orElseThrow();
+
+        LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(currentOrder.getCreatedAt()), ZoneId.systemDefault());
+
+        // Форматирование даты и времени в требуемый формат
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yy в HH:mm");
+        String formattedCurrentCreateOrderDateTime = dateTime.format(formatter);
+
+        String currentOrderStatusString = null;
+        List<String> currentOrderPrefixes = null;
+
+        try {
+            currentOrderPrefixes = objectMapper.readValue(currentOrder.getPrefixes(), ArrayList.class);
+        } catch (JsonProcessingException e) {
+            log.warn(e.getMessage());
+        }
+
+        switch (currentOrder.getOrderStatus()) {
+            case ACTIVE -> currentOrderStatusString = "Активный";
+            case IN_PROGRESS -> currentOrderStatusString = "В разработке";
+            case COMPLETED -> currentOrderStatusString = "Завершен";
+        }
+
+        StringBuilder getCurrentOrderTextMessage = new StringBuilder()
+                .append("\uD83D\uDCDD <b>Информация о заказе</b>\n\n")
+                .append("\uD83D\uDCCC <b>Статус:</b> <code>").append(currentOrderStatusString).append("</code>\n");
+
+        if (!currentOrderPrefixes.isEmpty()) {
+            getCurrentOrderTextMessage.append("\uD83D\uDD16 <b>Префиксы:</b> <code>");
+
+            for (int i = 0; i < currentOrderPrefixes.size(); i++) {
+                if (i == currentOrderPrefixes.size() - 1) {
+                    getCurrentOrderTextMessage.append(currentOrderPrefixes.get(i));
+                } else {
+                    getCurrentOrderTextMessage.append(currentOrderPrefixes.get(i)).append(", ");
+                }
+            }
+
+            getCurrentOrderTextMessage.append("</code>\n");
+        }
+
+        getCurrentOrderTextMessage.append("\uD83D\uDCCB <b>Заголовок:</b> ").append(currentOrder.getTitle()).append("\n")
+                .append("\uD83D\uDCDD <b>Описание:</b>\n\n<i>").append(currentOrder.getDescription()).append("</i>\n\n")
+                .append("\uD83D\uDCB0 <b>Бюджет:</b> <code>").append((currentOrder.getBudget() == null ? "Договорный" : currentOrder.getBudget() + "$")).append("</code>\n")
+                .append("\uD83D\uDCC5 <b>Дата создания:</b> <code>").append(formattedCurrentCreateOrderDateTime).append("</code>\n");
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+        List<InlineKeyboardButton> keyboardButtonsRow2 = new ArrayList<>();
+
+        if (currentOrder.getCustomerUserId().equals(principalUser.getId())) {
+            InlineKeyboardButton upOrderButton = InlineKeyboardButton.builder()
+                    .callbackData(CustomerCallback.UP_ORDER_CALLBACK + " " + orderId)
+                    .text("\uD83C\uDD99 Поднять заказ")
+                    .build();
+
+            keyboardButtonsRow1.add(upOrderButton);
+        }
+
+        //todo chat
+        InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
+                .callbackData("open chat ye")
+                .text("\uD83D\uDCAC Открыть чат")
+                .build();
+
+        keyboardButtonsRow1.add(openChatButton);
+
+        rowList.add(keyboardButtonsRow1);
+
+        InlineKeyboardButton backToMainCreateOrderButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_GET_ALL_ORDER_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        keyboardButtonsRow2.add(backToMainCreateOrderButton);
+
+        rowList.add(keyboardButtonsRow2);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .text(getCurrentOrderTextMessage.toString())
+                .replyMarkup(inlineKeyboardMarkup)
+                .chatId(chatId)
+                .messageId(messageId)
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
+    private void handleUpOrder(long chatId, String callbackQueryId, long orderId) {
+        Order currentOrder = orderRepository.findById(orderId)
+                .orElseThrow();
+        List<String> currentOrderPrefixes = null;
+
+        try {
+            currentOrderPrefixes = objectMapper.readValue(currentOrder.getPrefixes(), ArrayList.class);
+        } catch (JsonProcessingException e) {
+            log.warn(e.getMessage());
+        }
+
+        if (System.currentTimeMillis() - currentOrder.getLastUppedAt() <= 86_400_000) {
+            AnswerCallbackQuery answerCallbackQuery = AnswerCallbackQuery.builder()
+                    .callbackQueryId(callbackQueryId)
+                    .text("Вы можете поднимать свой заказ один раз в 24 часа")
+                    .showAlert(false)
+                    .build();
+
+            handleAnswerCallbackQuery(answerCallbackQuery);
+            return;
+        }
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(telegramBotProperty.getChannelChatId())
+                .messageId(currentOrder.getTelegramChannelMessageId()).build());
+
+        orderRepository.updateLastUppedAtById(System.currentTimeMillis(), currentOrder.getId());
+        orderRepository.updateTelegramChannelMessageIdById(generateOrderTextAndSend(currentOrder.getId(), currentOrder.getTitle(),
+                currentOrder.getDescription(), currentOrder.getBudget(), currentOrderPrefixes), currentOrder.getId());
+
+        AnswerCallbackQuery answerCallbackQuery = AnswerCallbackQuery.builder()
+                .text("Вы успешно подняли свой заказ")
+                .callbackQueryId(callbackQueryId)
+                .showAlert(false)
+                .build();
+
+        handleAnswerCallbackQuery(answerCallbackQuery);
+    }
+
+    private void handleTakeOrderMessage(long chatId, int messageId, User principalUser, long orderId) {
+        if (principalUser.getRole().equals(UserRole.CUSTOMER)) {
+            return;
+        }
+
+        Order currentOrder = orderRepository.findById(orderId)
+                        .orElseThrow();
+
+        List<String> currentOrderPrefixes = null;
+        List<String> principalUserPrefixes = null;
+
+        try {
+            currentOrderPrefixes = objectMapper.readValue(currentOrder.getPrefixes(), ArrayList.class);
+            principalUserPrefixes = objectMapper.readValue(principalUser.getExecutorPrefixes(), ArrayList.class);
+        } catch (JsonProcessingException e) {
+            log.warn(e.getMessage());
+        }
+
+        for (String currentOrderPrefix : currentOrderPrefixes) {
+            boolean isExist = false;
+
+            for (String principalUserPrefix : principalUserPrefixes) {
+                if (currentOrderPrefix.equals(principalUserPrefix)) {
+                    isExist = true;
+
+                    break;
+                }
+            }
+
+            if (!isExist) {
+                handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(chatId)
+                        .text("❌ <b>Вы не можете взять этот заказ, так как у вас нету соответствующего префикса(ов)</b>")
+                        .parseMode("html")
+                        .build());
+                return;
+            }
+        }
+
+        handleDeleteMessage(DeleteMessage.builder()
+                .chatId(telegramBotProperty.getChannelChatId())
+                .messageId(currentOrder.getTelegramChannelMessageId())
+                .build());
+
+        currentOrder.setOrderStatus(OrderStatus.IN_PROGRESS);
+        currentOrder.setExecutorUserId(principalUser.getId());
+        currentOrder.setTelegramChannelMessageId(null);
+
+        orderRepository.save(currentOrder);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        //todo chat
+        InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
+                .callbackData("open chat")
+                .text("\uD83D\uDCAC Открыть чат")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(openChatButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(principalUser.getTelegramId())
+                .text("\uD83C\uDF89 <b>Заказ взят в работу!</b>\n\n"
+                + "\uD83D\uDD35 <b>Статус:</b> <code>В разработке</code>\n\n"
+                + "\uD83D\uDCC4 <b>Заголовок:</b> <code>" + currentOrder.getTitle() + "</code>\n"
+                + "\uD83D\uDCDD <b>Описание:</b>\n\n<i>" + currentOrder.getDescription() + "</i>\n\n"
+                + "\uD83D\uDCB0 <b>Бюджет:</b> <code>" + (currentOrder.getBudget() == null ? "Договорный" : currentOrder.getBudget() + "$") + "</code>\n\n"
+                + "\uD83D\uDEE0\uFE0F <b>Исполнитель приступил к выполнению заказа. Ожидайте результатов!</b>")
+                .parseMode("html")
+                .replyMarkup(inlineKeyboardMarkup)
+                .build());
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(userRepository.findTelegramIdById(currentOrder.getCustomerUserId()))
+                .text("\uD83C\uDF89 <b>Заказ взят в работу!</b>\n\n"
+                        + "\uD83D\uDD35 <b>Статус:</b> <code>В разработке</code>\n\n"
+                        + "\uD83D\uDCC4 <b>Заголовок:</b> <code>" + currentOrder.getTitle() + "</code>\n"
+                        + "\uD83D\uDCDD <b>Описание:</b>\n\n<i>" + currentOrder.getDescription() + "</i>\n\n"
+                        + "\uD83D\uDCB0 <b>Бюджет:</b> <code>" + (currentOrder.getBudget() == null ? "Договорный" : currentOrder.getBudget() + "$") + "</code>\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Исполнитель приступил к выполнению заказа. Ожидайте результатов!</b>")
+                .parseMode("html")
+                .replyMarkup(inlineKeyboardMarkup)
+                .build());
+
+        System.out.println("why the mask??");
     }
 
     //Sys methods
@@ -734,6 +1141,69 @@ public class TelegramBot extends TelegramLongPollingBot {
         return replyKeyboardMarkup;
     }
 
+    private Integer generateOrderTextAndSend(long orderId, String title, String description, Double budget, List<String> prefixes) {
+        StringBuilder prefixesString = new StringBuilder();
+
+        for (int i = 0; i < prefixes.size(); i++) {
+            if (i == prefixes.size() - 1) {
+                prefixesString.append(prefixes.get(i));
+            } else {
+                prefixesString.append(prefixes.get(i)).append(", ");
+            }
+        }
+
+        StringBuilder textForTelegramChannel = new StringBuilder();
+
+        textForTelegramChannel.append("\uD83D\uDD35 <b>Активен</b>\n");
+
+        if (prefixes.isEmpty()) {
+            textForTelegramChannel.append("\n<b>").append(title).append("</b>\n\n")
+                    .append(description).append("\n\n");
+        } else {
+            textForTelegramChannel.append("\uD83C\uDFA9 <b>").append(prefixesString).append("</b>\n\n")
+                    .append("<b>").append(title).append("</b>\n\n")
+                    .append(description).append("\n\n");
+        }
+
+        if (budget == null) {
+            textForTelegramChannel.append("<b>Бюджет:</b> <code>").append("Договорный").append("</code>");
+        } else {
+            textForTelegramChannel.append("<b>Бюджет:</b> <code>").append(budget).append("$</code>");
+        }
+
+        Integer telegramChannelMessageId = null;
+
+        try {
+            InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+            InlineKeyboardButton takeButton = InlineKeyboardButton.builder()
+                    .url(telegramBotProperty.getBotUrl() + "?start=" + orderId)
+                    .text("Беру")
+                    .build();
+
+            List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+            keyboardButtonsRow1.add(takeButton);
+
+            List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+            rowList.add(keyboardButtonsRow1);
+
+            inlineKeyboardMarkup.setKeyboard(rowList);
+
+            telegramChannelMessageId = execute(SendMessage.builder()
+                    .text(textForTelegramChannel.toString())
+                    .chatId(telegramBotProperty.getChannelChatId())
+                    .replyMarkup(inlineKeyboardMarkup)
+                    .parseMode("html")
+                    .build()).getMessageId();
+        } catch (TelegramApiException e) {
+            log.warn(e.getMessage());
+        }
+
+        return telegramChannelMessageId;
+    }
+
     private void handleSendTextMessage(SendMessage message) {
         try {
             execute(message);
@@ -753,6 +1223,14 @@ public class TelegramBot extends TelegramLongPollingBot {
     private void handleDeleteMessage(DeleteMessage deleteMessage) {
         try {
             execute(deleteMessage);
+        } catch (TelegramApiException e) {
+            log.warn(e.getMessage());
+        }
+    }
+
+    private void handleAnswerCallbackQuery(AnswerCallbackQuery answerCallbackQuery) {
+        try {
+            execute(answerCallbackQuery);
         } catch (TelegramApiException e) {
             log.warn(e.getMessage());
         }

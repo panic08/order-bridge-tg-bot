@@ -17,6 +17,12 @@ public class User {
     @Column("telegram_id")
     private Long telegramId;
 
+    @Column("executor_status")
+    private String executorStatus;
+
+    @Column("executor_prefixes")
+    private String executorPrefixes;
+
     private UserRole role;
 
     private Double balance;

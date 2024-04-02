@@ -6,4 +6,5 @@ public class CustomerCallback {
     public static final String ACCEPT_PREFIX_CREATE_ORDER_CALLBACK = "accept prefix create order callback";
     public static final String DONT_MIND_CREATE_ORDER_CALLBACK = "dont mind create order callback";
     public static final String DEAL_BUDGET_CREATE_ORDER_CALLBACK = "deal budget create order callback";
+    public static final String UP_ORDER_CALLBACK = "up order callback";
 }

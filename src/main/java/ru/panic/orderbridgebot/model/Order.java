@@ -14,8 +14,11 @@ public class Order {
     @Id
     private Long id;
 
-    @Column("user_id")
-    private Long userId;
+    @Column("customer_user_id")
+    private Long customerUserId;
+
+    @Column("executor_user_id")
+    private Long executorUserId;
 
     @Column("order_status")
     private OrderStatus orderStatus;
@@ -32,6 +35,9 @@ public class Order {
 
     @Column("telegram_channel_message_id")
     private Integer telegramChannelMessageId;
+
+    @Column("last_upped_at")
+    private Long lastUppedAt;
 
     @Column("created_at")
     private Long createdAt;
