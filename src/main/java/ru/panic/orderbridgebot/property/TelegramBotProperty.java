@@ -17,4 +17,6 @@ public class TelegramBotProperty {
     private String botUrl;
 
     private Long channelChatId;
+
+    private Long chatReplenishmentNotificationChatId;
 }

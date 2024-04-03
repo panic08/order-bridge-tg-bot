@@ -23,16 +23,26 @@ import ru.panic.orderbridgebot.bot.callback.BackCallback;
 import ru.panic.orderbridgebot.bot.callback.CustomerCallback;
 import ru.panic.orderbridgebot.bot.callback.UserCallback;
 import ru.panic.orderbridgebot.bot.pojo.CreateOrderObject;
+import ru.panic.orderbridgebot.bot.pojo.CreateReplenishmentObject;
 import ru.panic.orderbridgebot.model.Order;
 import ru.panic.orderbridgebot.model.Prefix;
+import ru.panic.orderbridgebot.model.Replenishment;
 import ru.panic.orderbridgebot.model.User;
 import ru.panic.orderbridgebot.model.type.OrderStatus;
+import ru.panic.orderbridgebot.model.type.PaymentMethod;
+import ru.panic.orderbridgebot.model.type.ReplenishmentStatus;
 import ru.panic.orderbridgebot.model.type.UserRole;
+import ru.panic.orderbridgebot.payload.type.CryptoToken;
+import ru.panic.orderbridgebot.property.CryptoProperty;
 import ru.panic.orderbridgebot.property.TelegramBotProperty;
 import ru.panic.orderbridgebot.repository.OrderRepository;
 import ru.panic.orderbridgebot.repository.PrefixRepository;
+import ru.panic.orderbridgebot.repository.ReplenishmentRepository;
 import ru.panic.orderbridgebot.repository.UserRepository;
+import ru.panic.orderbridgebot.scheduler.CryptoCurrency;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -47,16 +57,23 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final UserRepository userRepository;
     private final OrderRepository orderRepository;
     private final PrefixRepository prefixRepository;
+    private final ReplenishmentRepository replenishmentRepository;
     private final ObjectMapper objectMapper;
+    private final CryptoCurrency cryptoCurrency;
+    private final CryptoProperty cryptoProperty;
     private final ExecutorService executorService;
     private final Map<Long, CreateOrderObject> createOrderSteps = new HashMap<>();
+    private final Map<Long, CreateReplenishmentObject> createReplenishmentSteps = new HashMap<>();
 
-    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ObjectMapper objectMapper, ExecutorService executorService) {
+    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
         this.telegramBotProperty = telegramBotProperty;
         this.userRepository = userRepository;
         this.orderRepository = orderRepository;
         this.prefixRepository = prefixRepository;
+        this.replenishmentRepository = replenishmentRepository;
         this.objectMapper = objectMapper;
+        this.cryptoCurrency = cryptoCurrency;
+        this.cryptoProperty = cryptoProperty;
         this.executorService = executorService;
 
         List<BotCommand> listOfCommands = new ArrayList<>();
@@ -130,10 +147,20 @@ public class TelegramBot extends TelegramLongPollingBot {
                         handleCreateGetAllOrderMessage(chatId, principalUser, 1);
                         return;
                     }
+
+                    case "\uD83D\uDCB0 Пополнить заказ" -> {
+                        handleCreateReplenishmentMessage(chatId);
+                        return;
+                    }
                 }
 
                 if (createOrderSteps.get(principalUser.getId()) != null) {
                     handleCreateOrderProcess(chatId, messageId, principalUser, text);
+                    return;
+                }
+
+                if (createReplenishmentSteps.get(principalUser.getId()) != null) {
+                    handleCreateReplenishmentProcess(chatId, messageId, text, principalUser, createReplenishmentSteps.get(principalUser.getId()));
                     return;
                 }
 
@@ -251,7 +278,15 @@ public class TelegramBot extends TelegramLongPollingBot {
                         handleEditGetAllOrderMessage(chatId, messageId, principalUser, 1);
                         return;
                     }
+
+                    case BackCallback.BACK_TO_MAIN_CREATE_REPLENISHMENT_CALLBACK -> {
+                        createReplenishmentSteps.remove(principalUser.getId());
+
+                        handleEditCreateReplenishmentGetAllOrderMessage(chatId, messageId);
+                        return;
+                    }
                 }
+
 
                 if (data.contains(CustomerCallback.SELECT_PREFIX_CREATE_ORDER_CALLBACK)) {
                     long prefixId = Long.parseLong(data.split(" ")[5]);
@@ -293,10 +328,54 @@ public class TelegramBot extends TelegramLongPollingBot {
                     return;
                 }
 
+                if (data.contains(CustomerCallback.DELETE_ORDER_CALLBACK)) {
+                    long orderId = Long.parseLong(data.split(" ")[3]);
+
+                    handleDeleteOrder(chatId, messageId, callbackQueryId, principalUser, orderId);
+                    return;
+                };
+
+
                 if (data.contains(UserCallback.GET_ALL_ORDER_CALLBACK)) {
                     int page = Integer.parseInt(data.split(" ")[4]);
 
                     handleEditGetAllOrderMessage(chatId, messageId, principalUser, page);
+                    return;
+                }
+
+
+                if (data.contains(CustomerCallback.CREATE_REPLENISHMENT_GET_ALL_ORDER_CALLBACK)) {
+                    int page = Integer.parseInt(data.split(" ")[6]);
+
+                    handleEditCreateReplenishmentGetAllOrderMessage(chatId, messageId, principalUser, page);
+                    return;
+                }
+
+                if (data.contains(CustomerCallback.CREATE_REPLENISHMENT_GET_CURRENT_ORDER_CALLBACK)) {
+                    long orderId = Long.parseLong(data.split(" ")[6]);
+
+                    handleCreateReplenishmentGetCurrentOrder(chatId, messageId, principalUser, orderId);
+                    return;
+                }
+
+                if (data.contains(CustomerCallback.CREATE_REPLENISHMENT_SELECT_PAYMENT_METHOD_CALLBACK)) {
+                    PaymentMethod paymentMethod = PaymentMethod.valueOf(data.split(" ")[6]);
+
+                    handleCreateReplenishmentSelectPaymentMethod(chatId, principalUser, paymentMethod);
+                    return;
+                }
+
+                if (data.contains(CustomerCallback.CREATE_REPLENISHMENT_ACCEPT_CALLBACK)) {
+                    long replenishmentId = Long.parseLong(data.split(" ")[4]);
+
+                    handleCreateReplenishmentAccept(chatId, messageId, principalUser, replenishmentId);
+                    return;
+                }
+
+                if (data.contains(CustomerCallback.CREATE_REPLENISHMENT_REFUSE_CALLBACK)) {
+                    long replenishmentId = Long.parseLong(data.split(" ")[4]);
+
+                    handleCreateReplenishmentRefuse(chatId, messageId, replenishmentId);
                     return;
                 }
 
@@ -790,6 +869,108 @@ public class TelegramBot extends TelegramLongPollingBot {
         handleSendTextMessage(sendMessage);
     }
 
+    private void handleCreateReplenishmentMessage(long chatId) {
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton createReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(CustomerCallback.CREATE_REPLENISHMENT_GET_ALL_ORDER_CALLBACK + " " + 1)
+                .text("\uD83D\uDCB0 Пополнить заказ")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(createReplenishmentButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        SendMessage message = SendMessage.builder()
+                .chatId(chatId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .text("\uD83D\uDCB0 <b>Пополнить заказ</b>\n\n"
+                + "Просто нажмите кнопку ниже, чтобы пополнить бюджет своего заказа и обеспечить исполнителя дополнительными средствами для выполнения задания\n\n"
+                + "\uD83D\uDEE0\uFE0F <b>Успешного сотрудничества!</b>")
+                .parseMode("html")
+                .build();
+
+        handleSendTextMessage(message);
+    }
+
+    private void handleEditCreateReplenishmentGetAllOrderMessage(long chatId, int messageId) {
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton createReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(CustomerCallback.CREATE_REPLENISHMENT_GET_ALL_ORDER_CALLBACK + " " + 1)
+                .text("\uD83D\uDCB0 Пополнить заказ")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(createReplenishmentButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .text("\uD83D\uDCB0 <b>Пополнить заказ</b>\n\n"
+                        + "Просто нажмите кнопку ниже, чтобы пополнить бюджет своего заказа и обеспечить исполнителя дополнительными средствами для выполнения задания\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Успешного сотрудничества!</b>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
+    private void handleCreateReplenishmentGetCurrentOrder(long chatId, int messageId, User principalUser, long orderId) {
+        Order currentOrder = orderRepository.findById(orderId)
+                .orElseThrow();
+
+        createReplenishmentSteps.put(principalUser.getId(), CreateReplenishmentObject.builder()
+                .beginMessageId(messageId)
+                .orderId(orderId)
+                .step(1)
+                .build());
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton createReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_CREATE_REPLENISHMENT_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(createReplenishmentButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .text("\uD83D\uDCB2 <b>Укажите сумму оплаты</b>\n\n"
+                + "Вы выбрали заказ <i>\"" + currentOrder.getTitle() + "\"</i> для пополнения бюджета. Теперь, пожалуйста, укажите сумму оплаты в долларах США ($)\n\n"
+                + "Пример: 500 (для $500)\n\n"
+                + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
     private void handleEditGetAllOrderMessage(long chatId, int messageId, User principalUser, int page) {
         List<Order> principalOrders = orderRepository
                 .findAllByCustomerUserIdOrExecutorUserIdWithOffsetOrderByCreatedAtDesc(principalUser.getId(),
@@ -801,6 +982,10 @@ public class TelegramBot extends TelegramLongPollingBot {
                 principalUser.getId());
 
         long maxPage = (long) Math.ceil((double) principalOrdersCount / 6);
+
+        if (maxPage == 0) {
+            maxPage = 1;
+        }
 
         InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
 
@@ -873,6 +1058,102 @@ public class TelegramBot extends TelegramLongPollingBot {
         handleEditMessageText(editMessageText);
     }
 
+    private void handleEditCreateReplenishmentGetAllOrderMessage(long chatId, int messageId, User principalUser, int page) {
+        List<Order> principalOrders = orderRepository
+                .findAllByCustomerUserIdAndOrderStatusWithOffsetOrderByCreatedAtDesc(principalUser.getId(),
+                        OrderStatus.IN_PROGRESS,
+                        6,
+                        6 * (page - 1));
+
+        long principalOrdersCount = orderRepository.countByCustomerUserIdAndOrderStatus(principalUser.getId(),
+                OrderStatus.IN_PROGRESS);
+
+        long maxPage = (long) Math.ceil((double) principalOrdersCount / 6);
+
+        if (maxPage == 0) {
+            maxPage = 1;
+        }
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        for (Order order : principalOrders) {
+            String orderStatusString = null;
+
+            switch (order.getOrderStatus()) {
+                case ACTIVE -> orderStatusString = "Активный";
+                case IN_PROGRESS -> orderStatusString = "В разработке";
+                case COMPLETED -> orderStatusString = "Завершен";
+            }
+
+            List<InlineKeyboardButton> orderKeyboardButtonsRow = new ArrayList<>();
+
+
+            InlineKeyboardButton orderButton = InlineKeyboardButton.builder()
+                    .callbackData(CustomerCallback.CREATE_REPLENISHMENT_GET_CURRENT_ORDER_CALLBACK + " " + order.getId())
+                    .text(order.getTitle() + " / " + (order.getBudget() == null ? "Договорный" : order.getBudget() + "$")
+                            + " / " + orderStatusString)
+                    .build();
+
+            orderKeyboardButtonsRow.add(orderButton);
+
+            rowList.add(orderKeyboardButtonsRow);
+        }
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        if (page != 1) {
+            InlineKeyboardButton prevButton = InlineKeyboardButton.builder()
+                    .callbackData(CustomerCallback.CREATE_REPLENISHMENT_GET_ALL_ORDER_CALLBACK + " " + (page - 1))
+                    .text("⏪ Предыдущая")
+                    .build();
+
+            keyboardButtonsRow1.add(prevButton);
+        }
+
+        InlineKeyboardButton currentButton = InlineKeyboardButton.builder()
+                .callbackData("answerQuery")
+                .text("Страница " + page + " / " + maxPage)
+                .build();
+
+        keyboardButtonsRow1.add(currentButton);
+
+        if (page != maxPage) {
+            InlineKeyboardButton nextButton = InlineKeyboardButton.builder()
+                    .callbackData(CustomerCallback.CREATE_REPLENISHMENT_GET_ALL_ORDER_CALLBACK + " " + (page + 1))
+                    .text("⏩ Следующая")
+                    .build();
+
+            keyboardButtonsRow1.add(nextButton);
+        }
+
+        rowList.add(keyboardButtonsRow1);
+
+        List<InlineKeyboardButton> keyboardButtonsRow2 = new ArrayList<>();
+
+        InlineKeyboardButton backToMainCreateReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_CREATE_REPLENISHMENT_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        keyboardButtonsRow2.add(backToMainCreateReplenishmentButton);
+
+        rowList.add(keyboardButtonsRow2);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .text("\uD83D\uDCB0 <b>Выберите заказ для пополнения бюджета:</b>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
     private void handleEditGetCurrentOrderMessage(long chatId, int messageId, long orderId, User principalUser) {
         Order currentOrder = orderRepository.findById(orderId)
                 .orElseThrow();
@@ -928,7 +1209,8 @@ public class TelegramBot extends TelegramLongPollingBot {
         List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
         List<InlineKeyboardButton> keyboardButtonsRow2 = new ArrayList<>();
 
-        if (currentOrder.getCustomerUserId().equals(principalUser.getId())) {
+        if (currentOrder.getOrderStatus().equals(OrderStatus.ACTIVE) &&
+                currentOrder.getCustomerUserId().equals(principalUser.getId())) {
             InlineKeyboardButton upOrderButton = InlineKeyboardButton.builder()
                     .callbackData(CustomerCallback.UP_ORDER_CALLBACK + " " + orderId)
                     .text("\uD83C\uDD99 Поднять заказ")
@@ -946,6 +1228,19 @@ public class TelegramBot extends TelegramLongPollingBot {
         keyboardButtonsRow1.add(openChatButton);
 
         rowList.add(keyboardButtonsRow1);
+
+        if (currentOrder.getOrderStatus().equals(OrderStatus.ACTIVE)) {
+            List<InlineKeyboardButton> keyboardButtonsRow3 = new ArrayList<>();
+
+            InlineKeyboardButton deleteOrderButton = InlineKeyboardButton.builder()
+                    .callbackData(CustomerCallback.DELETE_ORDER_CALLBACK + " " + currentOrder.getId())
+                    .text("❌ Удалить заказ")
+                    .build();
+
+            keyboardButtonsRow3.add(deleteOrderButton);
+
+            rowList.add(keyboardButtonsRow3);
+        }
 
         InlineKeyboardButton backToMainCreateOrderButton = InlineKeyboardButton.builder()
                 .callbackData(BackCallback.BACK_TO_GET_ALL_ORDER_CALLBACK)
@@ -1077,6 +1372,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         inlineKeyboardMarkup.setKeyboard(rowList);
 
+        //send message to executor
         handleSendTextMessage(SendMessage.builder()
                 .chatId(principalUser.getTelegramId())
                 .text("\uD83C\uDF89 <b>Заказ взят в работу!</b>\n\n"
@@ -1084,11 +1380,12 @@ public class TelegramBot extends TelegramLongPollingBot {
                 + "\uD83D\uDCC4 <b>Заголовок:</b> <code>" + currentOrder.getTitle() + "</code>\n"
                 + "\uD83D\uDCDD <b>Описание:</b>\n\n<i>" + currentOrder.getDescription() + "</i>\n\n"
                 + "\uD83D\uDCB0 <b>Бюджет:</b> <code>" + (currentOrder.getBudget() == null ? "Договорный" : currentOrder.getBudget() + "$") + "</code>\n\n"
-                + "\uD83D\uDEE0\uFE0F <b>Исполнитель приступил к выполнению заказа. Ожидайте результатов!</b>")
+                + "\uD83D\uDEE0\uFE0F <b>Теперь, когда все готово, вы можете приступить к обсуждению этого проекта с заказчиком</b>")
                 .parseMode("html")
                 .replyMarkup(inlineKeyboardMarkup)
                 .build());
 
+        //send message to customer
         handleSendTextMessage(SendMessage.builder()
                 .chatId(userRepository.findTelegramIdById(currentOrder.getCustomerUserId()))
                 .text("\uD83C\uDF89 <b>Заказ взят в работу!</b>\n\n"
@@ -1096,12 +1393,220 @@ public class TelegramBot extends TelegramLongPollingBot {
                         + "\uD83D\uDCC4 <b>Заголовок:</b> <code>" + currentOrder.getTitle() + "</code>\n"
                         + "\uD83D\uDCDD <b>Описание:</b>\n\n<i>" + currentOrder.getDescription() + "</i>\n\n"
                         + "\uD83D\uDCB0 <b>Бюджет:</b> <code>" + (currentOrder.getBudget() == null ? "Договорный" : currentOrder.getBudget() + "$") + "</code>\n\n"
-                        + "\uD83D\uDEE0\uFE0F <b>Исполнитель приступил к выполнению заказа. Ожидайте результатов!</b>")
+                        + "\uD83D\uDEE0\uFE0F <b>Теперь, когда все готово, вы можете приступить к обсуждению этого проекта с исполнителем</b>")
                 .parseMode("html")
                 .replyMarkup(inlineKeyboardMarkup)
                 .build());
+    }
 
-        System.out.println("why the mask??");
+    private void handleDeleteOrder(long chatId, int messageId, String callbackQueryId, User principalUser, long orderId) {
+        Order currentOrder = orderRepository.findById(orderId)
+                .orElseThrow();
+
+        if (currentOrder.getTelegramChannelMessageId() != null) {
+            handleDeleteMessage(DeleteMessage.builder()
+                    .chatId(telegramBotProperty.getChannelChatId())
+                    .messageId(currentOrder.getTelegramChannelMessageId())
+                    .build());
+        }
+
+        orderRepository.delete(currentOrder);
+
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .text("Вы успешно удалили свой заказ")
+                .build());
+
+        handleEditGetAllOrderMessage(chatId, messageId, principalUser, 1);
+    }
+
+    private void handleCreateReplenishmentProcess(long chatId, Integer messageId, String text, User principalUser, CreateReplenishmentObject createReplenishmentObject) {
+        switch (createReplenishmentObject.getStep()) {
+            case 1 -> {
+                double amount = Double.parseDouble(text);
+
+                createReplenishmentObject.setStep(2);
+                createReplenishmentObject.setAmount(amount);
+
+                createReplenishmentSteps.put(principalUser.getId(), createReplenishmentObject);
+
+                handleDeleteMessage(DeleteMessage.builder()
+                        .chatId(chatId)
+                        .messageId(messageId)
+                        .build());
+
+                InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+                List<InlineKeyboardButton> keyboardButtonsRow2 = new ArrayList<>();
+                List<InlineKeyboardButton> keyboardButtonsRow3 = new ArrayList<>();
+                List<InlineKeyboardButton> keyboardButtonsRow4 = new ArrayList<>();
+
+                InlineKeyboardButton btcPaymentReplenishmentButton = InlineKeyboardButton.builder()
+                        .callbackData(CustomerCallback.CREATE_REPLENISHMENT_SELECT_PAYMENT_METHOD_CALLBACK + " " + PaymentMethod.BTC)
+                        .text("BTC")
+                        .build();
+
+                InlineKeyboardButton ltcPaymentReplenishmentButton = InlineKeyboardButton.builder()
+                        .callbackData(CustomerCallback.CREATE_REPLENISHMENT_SELECT_PAYMENT_METHOD_CALLBACK + " " + PaymentMethod.LTC)
+                        .text("LTC")
+                        .build();
+
+                InlineKeyboardButton trc20PaymentReplenishmentButton = InlineKeyboardButton.builder()
+                        .callbackData(CustomerCallback.CREATE_REPLENISHMENT_SELECT_PAYMENT_METHOD_CALLBACK + " " + PaymentMethod.TRC20)
+                        .text("TRC20")
+                        .build();
+
+                InlineKeyboardButton backToMainCreateReplenishmentButton = InlineKeyboardButton.builder()
+                        .callbackData(BackCallback.BACK_TO_MAIN_CREATE_REPLENISHMENT_CALLBACK)
+                        .text("↩\uFE0F Назад")
+                        .build();
+
+                keyboardButtonsRow1.add(btcPaymentReplenishmentButton);
+                keyboardButtonsRow2.add(ltcPaymentReplenishmentButton);
+                keyboardButtonsRow3.add(trc20PaymentReplenishmentButton);
+                keyboardButtonsRow4.add(backToMainCreateReplenishmentButton);
+
+                List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                rowList.add(keyboardButtonsRow1);
+                rowList.add(keyboardButtonsRow2);
+                rowList.add(keyboardButtonsRow3);
+                rowList.add(keyboardButtonsRow4);
+
+                inlineKeyboardMarkup.setKeyboard(rowList);
+
+                EditMessageText editMessageText = EditMessageText.builder()
+                        .chatId(chatId)
+                        .messageId(createReplenishmentObject.getBeginMessageId())
+                        .replyMarkup(inlineKeyboardMarkup)
+                        .text("\uD83D\uDCB3 <b>Выберите метод оплаты</b>\n\n"
+                        + "Пожалуйста, выберите удобный для вас метод оплаты из списка ниже\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                        .parseMode("html")
+                        .build();
+
+                handleEditMessageText(editMessageText);
+            }
+            case 3 -> {
+                createReplenishmentSteps.remove(principalUser.getId());
+
+                Replenishment newReplenishment = Replenishment.builder()
+                        .userId(principalUser.getId())
+                        .status(ReplenishmentStatus.PENDING)
+                        .method(createReplenishmentObject.getPaymentMethod())
+                        .createdAt(System.currentTimeMillis())
+                        .build();
+
+                System.out.println(cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
+
+                BigDecimal paymentAmount = null;
+
+                switch (createReplenishmentObject.getPaymentMethod()) {
+                    case BTC -> {
+                        paymentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
+
+                        paymentAmount = paymentAmount.setScale(7, RoundingMode.HALF_UP);
+
+                        newReplenishment.setAmount(paymentAmount.toPlainString());
+                    }
+                    case LTC -> {
+                        paymentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.LTC));
+
+                        paymentAmount = paymentAmount.setScale(4, RoundingMode.HALF_UP);
+
+                        newReplenishment.setAmount(paymentAmount.toPlainString());
+                    }
+                    case TRC20 -> {
+                        paymentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.USDT));
+
+                        paymentAmount = paymentAmount.setScale(2, RoundingMode.HALF_UP);
+
+                        newReplenishment.setAmount(paymentAmount.toPlainString());
+                    }
+                }
+
+                newReplenishment = replenishmentRepository.save(newReplenishment);
+
+                StringBuilder textForCreateReplenishment = new StringBuilder();
+
+                textForCreateReplenishment.append("\uD83D\uDCB3 <b>Данные для оплаты</b>\n\n")
+                        .append("Вы выбрали метод оплаты: ").append(createReplenishmentObject.getPaymentMethod()).append("\n\n")
+                        .append("\uD83D\uDD39 <b>Адрес получателя:</b> <code>");
+
+                switch (createReplenishmentObject.getPaymentMethod()) {
+                    case BTC -> textForCreateReplenishment.append(cryptoProperty.getBtcAddress()).append("</code>\n");
+                    case LTC -> textForCreateReplenishment.append(cryptoProperty.getLtcAddress()).append("</code>\n");
+                    case TRC20 -> textForCreateReplenishment.append(cryptoProperty.getTrc20Address()).append("</code>\n");
+                }
+
+                textForCreateReplenishment.append("\uD83D\uDCB0 <b>Сумма:</b> <code>").append(newReplenishment.getAmount()).append("</code>\n\n")
+                        .append("\uD83D\uDD10 Пожалуйста, используйте указанные выше данные для осуществления платежа\n\n")
+                        .append("\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>");
+
+                InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+                InlineKeyboardButton acceptReplenishmentButton = InlineKeyboardButton.builder()
+                        .callbackData(CustomerCallback.CREATE_REPLENISHMENT_ACCEPT_CALLBACK + " " + newReplenishment.getId())
+                        .text("✅ Оплатил")
+                        .build();
+
+                InlineKeyboardButton refuseReplenishmentButton = InlineKeyboardButton.builder()
+                        .callbackData(CustomerCallback.CREATE_REPLENISHMENT_REFUSE_CALLBACK + " " + newReplenishment.getId())
+                        .text("❌ Отменить")
+                        .build();
+
+                keyboardButtonsRow1.add(acceptReplenishmentButton);
+                keyboardButtonsRow1.add(refuseReplenishmentButton);
+
+                List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                rowList.add(keyboardButtonsRow1);
+
+                inlineKeyboardMarkup.setKeyboard(rowList);
+
+                EditMessageText editMessageText = EditMessageText.builder()
+                        .chatId(chatId)
+                        .messageId(createReplenishmentObject.getBeginMessageId())
+                        .replyMarkup(inlineKeyboardMarkup)
+                        .text(textForCreateReplenishment.toString())
+                        .parseMode("html")
+                        .build();
+
+                handleEditMessageText(editMessageText);
+                //todo handle create newReplenishment
+            }
+        }
+    }
+
+    private void handleCreateReplenishmentSelectPaymentMethod(long chatId, User principalUser, PaymentMethod paymentMethod) {
+        CreateReplenishmentObject createReplenishmentObject = createReplenishmentSteps.get(principalUser.getId());
+
+        createReplenishmentObject.setStep(3);
+        createReplenishmentObject.setPaymentMethod(paymentMethod);
+
+        createReplenishmentSteps.put(principalUser.getId(), createReplenishmentObject);
+
+        handleCreateReplenishmentProcess(chatId, null, null, principalUser, createReplenishmentObject);
+    }
+
+    private void handleCreateReplenishmentAccept(long chatId, int messageId, User principalUser, long replenishmentId) {
+
+    }
+
+    private void handleCreateReplenishmentRefuse(long chatId, int messageId, long replenishmentId) {
+        replenishmentRepository.deleteById(replenishmentId);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("❌ <b>Вы успешно отменили платеж</b>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
     }
 
     //Sys methods
@@ -1124,15 +1629,22 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         switch (principalUser.getRole()) {
             case CUSTOMER -> {
+                KeyboardRow keyboardRow2 = new KeyboardRow();
+
                 KeyboardButton createOrderButton = new KeyboardButton("➕ Создать заказ");
                 KeyboardButton myOrdersButton = new KeyboardButton("\uD83D\uDCCB Мои заказы");
-
-                KeyboardRow keyboardRow2 = new KeyboardRow();
 
                 keyboardRow2.add(createOrderButton);
                 keyboardRow2.add(myOrdersButton);
 
+                KeyboardRow keyboardRow3 = new KeyboardRow();
+
+                KeyboardButton createReplenishmentButton = new KeyboardButton("\uD83D\uDCB0 Пополнить заказ");
+
+                keyboardRow3.add(createReplenishmentButton);
+
                 keyboardRows.add(keyboardRow2);
+                keyboardRows.add(keyboardRow3);
             }
         }
 
