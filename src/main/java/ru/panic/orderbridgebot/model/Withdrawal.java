@@ -6,27 +6,26 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.relational.core.mapping.Column;
 import org.springframework.data.relational.core.mapping.Table;
 import ru.panic.orderbridgebot.model.type.PaymentMethod;
-import ru.panic.orderbridgebot.model.type.ReplenishmentStatus;
+import ru.panic.orderbridgebot.model.type.WithdrawalStatus;
 
-@Table(name = "replenishments_table")
+@Table(name = "withdrawals_table")
 @Data
 @Builder
-public class Replenishment {
+public class Withdrawal {
     @Id
     private Long id;
 
     @Column("user_id")
     private Long userId;
 
-    @Column("order_id")
-    private Long orderId;
+    private WithdrawalStatus status;
 
-    private ReplenishmentStatus status;
-
-    @Column("method")
-    private PaymentMethod method;
+    @Column("payment_method")
+    private PaymentMethod paymentMethod;
 
     private String amount;
+
+    private String address;
 
     @Column("payment_amount")
     private Double paymentAmount;

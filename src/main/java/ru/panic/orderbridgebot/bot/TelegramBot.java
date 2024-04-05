@@ -19,26 +19,16 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKe
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardButton;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
-import ru.panic.orderbridgebot.bot.callback.BackCallback;
-import ru.panic.orderbridgebot.bot.callback.CustomerCallback;
-import ru.panic.orderbridgebot.bot.callback.UserCallback;
+import ru.panic.orderbridgebot.bot.callback.*;
 import ru.panic.orderbridgebot.bot.pojo.CreateOrderObject;
 import ru.panic.orderbridgebot.bot.pojo.CreateReplenishmentObject;
-import ru.panic.orderbridgebot.model.Order;
-import ru.panic.orderbridgebot.model.Prefix;
-import ru.panic.orderbridgebot.model.Replenishment;
-import ru.panic.orderbridgebot.model.User;
-import ru.panic.orderbridgebot.model.type.OrderStatus;
-import ru.panic.orderbridgebot.model.type.PaymentMethod;
-import ru.panic.orderbridgebot.model.type.ReplenishmentStatus;
-import ru.panic.orderbridgebot.model.type.UserRole;
+import ru.panic.orderbridgebot.bot.pojo.CreateWithdrawalObject;
+import ru.panic.orderbridgebot.model.*;
+import ru.panic.orderbridgebot.model.type.*;
 import ru.panic.orderbridgebot.payload.type.CryptoToken;
 import ru.panic.orderbridgebot.property.CryptoProperty;
 import ru.panic.orderbridgebot.property.TelegramBotProperty;
-import ru.panic.orderbridgebot.repository.OrderRepository;
-import ru.panic.orderbridgebot.repository.PrefixRepository;
-import ru.panic.orderbridgebot.repository.ReplenishmentRepository;
-import ru.panic.orderbridgebot.repository.UserRepository;
+import ru.panic.orderbridgebot.repository.*;
 import ru.panic.orderbridgebot.scheduler.CryptoCurrency;
 
 import java.math.BigDecimal;
@@ -58,19 +48,22 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final OrderRepository orderRepository;
     private final PrefixRepository prefixRepository;
     private final ReplenishmentRepository replenishmentRepository;
+    private final WithdrawalRepository withdrawalRepository;
     private final ObjectMapper objectMapper;
     private final CryptoCurrency cryptoCurrency;
     private final CryptoProperty cryptoProperty;
     private final ExecutorService executorService;
     private final Map<Long, CreateOrderObject> createOrderSteps = new HashMap<>();
+    private final Map<Long, CreateWithdrawalObject> createWithdrawalSteps = new HashMap<>();
     private final Map<Long, CreateReplenishmentObject> createReplenishmentSteps = new HashMap<>();
 
-    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
+    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, WithdrawalRepository withdrawalRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
         this.telegramBotProperty = telegramBotProperty;
         this.userRepository = userRepository;
         this.orderRepository = orderRepository;
         this.prefixRepository = prefixRepository;
         this.replenishmentRepository = replenishmentRepository;
+        this.withdrawalRepository = withdrawalRepository;
         this.objectMapper = objectMapper;
         this.cryptoCurrency = cryptoCurrency;
         this.cryptoProperty = cryptoProperty;
@@ -84,7 +77,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         try {
             execute(new SetMyCommands(listOfCommands, new BotCommandScopeDefault(), null));
         } catch (TelegramApiException e) {
-            e.printStackTrace();
+            log.warn(e.getMessage());
         }
     }
 
@@ -152,6 +145,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                         handleCreateReplenishmentMessage(chatId);
                         return;
                     }
+
+                    case "\uD83D\uDCB8 Вывод средств" -> {
+                        handleCreateWithdrawalMessage(chatId);
+                        return;
+                    }
                 }
 
                 if (createOrderSteps.get(principalUser.getId()) != null) {
@@ -161,6 +159,11 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                 if (createReplenishmentSteps.get(principalUser.getId()) != null) {
                     handleCreateReplenishmentProcess(chatId, messageId, text, principalUser, createReplenishmentSteps.get(principalUser.getId()));
+                    return;
+                }
+
+                if (createWithdrawalSteps.get(principalUser.getId()) != null) {
+                    handleCreateWithdrawalProcess(chatId, messageId, text, principalUser, createWithdrawalSteps.get(principalUser.getId()));
                     return;
                 }
 
@@ -202,14 +205,14 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                         InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
 
-                        InlineKeyboardButton createOrderButton = InlineKeyboardButton.builder()
+                        InlineKeyboardButton backToMainCreateOrderButton = InlineKeyboardButton.builder()
                                 .callbackData(BackCallback.BACK_TO_MAIN_CREATE_ORDER_CALLBACK)
                                 .text("↩\uFE0F Назад")
                                 .build();
 
                         List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
 
-                        keyboardButtonsRow1.add(createOrderButton);
+                        keyboardButtonsRow1.add(backToMainCreateOrderButton);
 
                         List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
 
@@ -263,6 +266,46 @@ public class TelegramBot extends TelegramLongPollingBot {
                         createOrderSteps.put(principalUser.getId(), createOrderObject);
 
                         handleCreateOrderProcess(chatId, null, principalUser, null);
+
+                        return;
+                    }
+
+                    case ExecutorCallback.CREATE_WITHDRAWAL_CALLBACK -> {
+                        createWithdrawalSteps.put(principalUser.getId(), CreateWithdrawalObject.builder()
+                                .step(1)
+                                .beginMessageId(messageId)
+                                .build());
+
+                        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                        InlineKeyboardButton backToMainCreateWithdrawalButton = InlineKeyboardButton.builder()
+                                .callbackData(BackCallback.BACK_TO_MAIN_CREATE_WITHDRAWAL_CALLBACK)
+                                .text("↩\uFE0F Назад")
+                                .build();
+
+                        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+                        keyboardButtonsRow1.add(backToMainCreateWithdrawalButton);
+
+                        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                        rowList.add(keyboardButtonsRow1);
+
+                        inlineKeyboardMarkup.setKeyboard(rowList);
+
+                        EditMessageText editMessageText = EditMessageText.builder()
+                                .chatId(chatId)
+                                .messageId(messageId)
+                                .text("\uD83D\uDCB2 <b>Укажите сумму вывода</b>\n\n"
+                                + "Пожалуйста, укажите сумму, которую вы хотели бы вывести со своего баланса в USD($)\n\n"
+                                + "<b>Пример:</b> 100 (для $100)\n\n"
+                                + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
+                                .replyMarkup(inlineKeyboardMarkup)
+                                .parseMode("html")
+                                .build();
+
+                        handleEditMessageText(editMessageText);
+                        return;
                     }
 
 
@@ -283,6 +326,13 @@ public class TelegramBot extends TelegramLongPollingBot {
                         createReplenishmentSteps.remove(principalUser.getId());
 
                         handleEditCreateReplenishmentGetAllOrderMessage(chatId, messageId);
+                        return;
+                    }
+
+                    case BackCallback.BACK_TO_MAIN_CREATE_WITHDRAWAL_CALLBACK -> {
+                        createWithdrawalSteps.remove(principalUser.getId());
+
+                        handleEditWithdrawalMessage(chatId, messageId);
                         return;
                     }
                 }
@@ -368,7 +418,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 if (data.contains(CustomerCallback.CREATE_REPLENISHMENT_ACCEPT_CALLBACK)) {
                     long replenishmentId = Long.parseLong(data.split(" ")[4]);
 
-                    handleCreateReplenishmentAccept(chatId, messageId, principalUser, replenishmentId);
+                    handleCreateReplenishmentAccept(chatId, messageId, principalUser, update.getCallbackQuery().getFrom().getFirstName(), replenishmentId);
                     return;
                 }
 
@@ -376,6 +426,56 @@ public class TelegramBot extends TelegramLongPollingBot {
                     long replenishmentId = Long.parseLong(data.split(" ")[4]);
 
                     handleCreateReplenishmentRefuse(chatId, messageId, replenishmentId);
+                    return;
+                }
+
+                if (data.contains(ExecutorCallback.CREATE_WITHDRAWAL_ACCEPT_CALLBACK)) {
+                    long withdrawalId = Long.parseLong(data.split(" ")[4]);
+
+                    handleCreateWithdrawalAccept(chatId, messageId, callbackQueryId, principalUser, update.getCallbackQuery().getFrom().getFirstName(),
+                            withdrawalId);
+                    return;
+                }
+
+                if (data.contains(ExecutorCallback.CREATE_WITHDRAWAL_REFUSE_CALLBACK)) {
+                    long withdrawalId = Long.parseLong(data.split(" ")[4]);
+
+                    handleCreateWithdrawalRefuse(chatId, messageId, withdrawalId);
+                    return;
+                }
+
+                if (data.contains(AdminCallback.ACCEPT_REPLENISHMENT_CALLBACK)) {
+                    long replenishmentId = Long.parseLong(data.split(" ")[3]);
+
+                    handleAdminAcceptReplenishment(chatId, messageId, replenishmentId, callbackQueryId);
+                    return;
+                }
+
+                if (data.contains(ExecutorCallback.CREATE_WITHDRAWAL_SELECT_PAYMENT_METHOD_CALLBACK)) {
+                    PaymentMethod paymentMethod = PaymentMethod.valueOf(data.split(" ")[6]);
+
+                    handleCreateWithdrawalSelectPaymentMethod(chatId, paymentMethod, principalUser);
+                    return;
+                }
+
+                if (data.contains(AdminCallback.REFUSE_REPLENISHMENT_CALLBACK)) {
+                    long replenishmentId = Long.parseLong(data.split(" ")[3]);
+
+                    handleAdminRefuseReplenishment(chatId, messageId, replenishmentId, callbackQueryId);
+                    return;
+                }
+
+                if (data.contains(AdminCallback.ACCEPT_WITHDRAWAL_CALLBACK)) {
+                    long withdrawalId = Long.parseLong(data.split(" ")[3]);
+
+                    handleAdminAcceptWithdrawal(chatId, messageId, withdrawalId, callbackQueryId);
+                    return;
+                }
+
+                if (data.contains(AdminCallback.REFUSE_WITHDRAWAL_CALLBACK)) {
+                    long withdrawalId = Long.parseLong(data.split(" ")[3]);
+
+                    handleAdminRefuseWithdrawal(chatId, messageId, withdrawalId, callbackQueryId);
                     return;
                 }
 
@@ -774,7 +874,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .text("\uD83D\uDE80 <b>Заказ успешно опубликован!</b>\n\n"
                                 + "Поздравляем! Ваш заказ был успешно опубликован\n\n"
                                 + "\uD83C\uDF89 <b>Теперь наши исполнители могут просматривать его и предлагать свои услуги</b>\n\n"
-                                + "\uD83D\uDCBC Если у вас есть какие-либо дополнительные вопросы или требуется изменение заказа, не стесняйтесь обращаться к нам\n\n"
+                                + "\uD83D\uDCBC Если у вас есть какие-либо дополнительные вопросы или требуется изменение заказа, не стесняйтесь обращаться в нашу поддержку\n\n"
                                 + "<b>Благодарим за использование нашего сервиса! Удачи в реализации вашего проекта!</b> \uD83C\uDF1F")
                         .build();
 
@@ -860,7 +960,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .text("\uD83D\uDCCB <b>Мои заказы</b>\n\n"
                 + "<b>Добро пожаловать в раздел ваших заказов!</b> Здесь вы можете просматривать и управлять своими активными заказами\n\n"
                 + "\uD83D\uDCC4 Для просмотра всех ваших заказов, выберите соответствующую страницу с помощью кнопок ниже\n\n"
-                + "\uD83D\uDEE0\uFE0F <b>Если у вас есть какие-либо вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                + "\uD83D\uDEE0\uFE0F <b>Если у вас есть какие-либо вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
                 .chatId(chatId)
                 .replyMarkup(inlineKeyboardMarkup)
                 .parseMode("html")
@@ -962,9 +1062,9 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .messageId(messageId)
                 .replyMarkup(inlineKeyboardMarkup)
                 .text("\uD83D\uDCB2 <b>Укажите сумму оплаты</b>\n\n"
-                + "Вы выбрали заказ <i>\"" + currentOrder.getTitle() + "\"</i> для пополнения бюджета. Теперь, пожалуйста, укажите сумму оплаты в долларах США ($)\n\n"
-                + "Пример: 500 (для $500)\n\n"
-                + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                + "Вы выбрали заказ <code>\"" + currentOrder.getTitle() + "\"</code> для пополнения бюджета. Теперь, пожалуйста, укажите сумму оплаты в долларах США ($)\n\n"
+                + "<b>Пример:</b> 500 (для $500)\n\n"
+                + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
                 .parseMode("html")
                 .build();
 
@@ -1048,7 +1148,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .text("\uD83D\uDCCB <b>Мои заказы</b>\n\n"
                         + "<b>Добро пожаловать в раздел ваших заказов!</b> Здесь вы можете просматривать и управлять своими активными заказами\n\n"
                         + "\uD83D\uDCC4 Для просмотра всех ваших заказов, выберите соответствующую страницу с помощью кнопок ниже\n\n"
-                        + "\uD83D\uDEE0\uFE0F <b>Если у вас есть какие-либо вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас есть какие-либо вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
                 .chatId(chatId)
                 .messageId(messageId)
                 .replyMarkup(inlineKeyboardMarkup)
@@ -1482,7 +1582,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .replyMarkup(inlineKeyboardMarkup)
                         .text("\uD83D\uDCB3 <b>Выберите метод оплаты</b>\n\n"
                         + "Пожалуйста, выберите удобный для вас метод оплаты из списка ниже\n\n"
-                        + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>")
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
                         .parseMode("html")
                         .build();
 
@@ -1493,36 +1593,37 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                 Replenishment newReplenishment = Replenishment.builder()
                         .userId(principalUser.getId())
+                        .orderId(createReplenishmentObject.getOrderId())
+                        .paymentAmount(createReplenishmentObject.getAmount())
                         .status(ReplenishmentStatus.PENDING)
                         .method(createReplenishmentObject.getPaymentMethod())
                         .createdAt(System.currentTimeMillis())
                         .build();
 
-                System.out.println(cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
 
-                BigDecimal paymentAmount = null;
+                BigDecimal replenishmentAmount = null;
 
                 switch (createReplenishmentObject.getPaymentMethod()) {
                     case BTC -> {
-                        paymentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
+                        replenishmentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
 
-                        paymentAmount = paymentAmount.setScale(7, RoundingMode.HALF_UP);
+                        replenishmentAmount = replenishmentAmount.setScale(7, RoundingMode.HALF_UP);
 
-                        newReplenishment.setAmount(paymentAmount.toPlainString());
+                        newReplenishment.setAmount(replenishmentAmount.toPlainString());
                     }
                     case LTC -> {
-                        paymentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.LTC));
+                        replenishmentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.LTC));
 
-                        paymentAmount = paymentAmount.setScale(4, RoundingMode.HALF_UP);
+                        replenishmentAmount = replenishmentAmount.setScale(4, RoundingMode.HALF_UP);
 
-                        newReplenishment.setAmount(paymentAmount.toPlainString());
+                        newReplenishment.setAmount(replenishmentAmount.toPlainString());
                     }
                     case TRC20 -> {
-                        paymentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.USDT));
+                        replenishmentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.USDT));
 
-                        paymentAmount = paymentAmount.setScale(2, RoundingMode.HALF_UP);
+                        replenishmentAmount = replenishmentAmount.setScale(2, RoundingMode.HALF_UP);
 
-                        newReplenishment.setAmount(paymentAmount.toPlainString());
+                        newReplenishment.setAmount(replenishmentAmount.toPlainString());
                     }
                 }
 
@@ -1531,7 +1632,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 StringBuilder textForCreateReplenishment = new StringBuilder();
 
                 textForCreateReplenishment.append("\uD83D\uDCB3 <b>Данные для оплаты</b>\n\n")
-                        .append("Вы выбрали метод оплаты: ").append(createReplenishmentObject.getPaymentMethod()).append("\n\n")
+                        .append("Вы выбрали метод оплаты: <b>").append(createReplenishmentObject.getPaymentMethod()).append("</b>\n\n")
                         .append("\uD83D\uDD39 <b>Адрес получателя:</b> <code>");
 
                 switch (createReplenishmentObject.getPaymentMethod()) {
@@ -1542,7 +1643,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                 textForCreateReplenishment.append("\uD83D\uDCB0 <b>Сумма:</b> <code>").append(newReplenishment.getAmount()).append("</code>\n\n")
                         .append("\uD83D\uDD10 Пожалуйста, используйте указанные выше данные для осуществления платежа\n\n")
-                        .append("\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться к нам</b>");
+                        .append("\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>");
 
                 InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
 
@@ -1576,7 +1677,6 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .build();
 
                 handleEditMessageText(editMessageText);
-                //todo handle create newReplenishment
             }
         }
     }
@@ -1592,21 +1692,549 @@ public class TelegramBot extends TelegramLongPollingBot {
         handleCreateReplenishmentProcess(chatId, null, null, principalUser, createReplenishmentObject);
     }
 
-    private void handleCreateReplenishmentAccept(long chatId, int messageId, User principalUser, long replenishmentId) {
+    private void handleCreateReplenishmentAccept(long chatId, int messageId, User principalUser, String firstName, long replenishmentId) {
+        Replenishment currentReplenishment = replenishmentRepository.findById(replenishmentId)
+                        .orElseThrow();
 
-    }
+        Order currentOrder = orderRepository.findById(currentReplenishment.getOrderId())
+                        .orElseThrow();
 
-    private void handleCreateReplenishmentRefuse(long chatId, int messageId, long replenishmentId) {
-        replenishmentRepository.deleteById(replenishmentId);
+        replenishmentRepository.updateStatusById(ReplenishmentStatus.IN_PROCESS, replenishmentId);
 
         EditMessageText editMessageText = EditMessageText.builder()
                 .chatId(chatId)
                 .messageId(messageId)
-                .text("❌ <b>Вы успешно отменили платеж</b>")
+                .text("✅ <b>Вы успешно оплатили платеж для заказа <code>\"" + currentOrder.getTitle() + "\"</code>. Ожидайте подтверждения со стороны администрации</b>")
                 .parseMode("html")
                 .build();
 
         handleEditMessageText(editMessageText);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        InlineKeyboardButton acceptReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(AdminCallback.ACCEPT_REPLENISHMENT_CALLBACK + " " + replenishmentId)
+                .text("✅ Принять")
+                .build();
+
+        InlineKeyboardButton refuseReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(AdminCallback.REFUSE_REPLENISHMENT_CALLBACK + " " + replenishmentId)
+                .text("❌ Отклонить")
+                .build();
+
+        keyboardButtonsRow1.add(acceptReplenishmentButton);
+        keyboardButtonsRow1.add(refuseReplenishmentButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        SendMessage message = SendMessage.builder()
+                .chatId(telegramBotProperty.getChatReplenishmentNotificationChatId())
+                .replyMarkup(inlineKeyboardMarkup)
+                .text("\uD83C\uDF89 <b>Новая заявка на пополнение</b>\n\n"
+                + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
+                + "\uD83E\uDEAA <b>Имя:</b> <code>" + firstName + "</code>\n\n"
+                + "\uD83D\uDD24 <b>Заголовок заказа:</b> <code>" + currentOrder.getTitle() + "</code>\n\n"
+                + "ℹ\uFE0F <b>Метод оплаты:</b> <code>" + currentReplenishment.getMethod() + "</code>\n"
+                + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + currentReplenishment.getAmount() + "</code>\n"
+                + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + currentReplenishment.getPaymentAmount() + "</code>")
+                .parseMode("html")
+                .build();
+
+        handleSendTextMessage(message);
+    }
+
+    private void handleCreateWithdrawalAccept(long chatId, int messageId, String callbackQueryId, User principalUser, String firstName,
+                                                 long withdrawalId) {
+        Withdrawal currentWithdrawal = withdrawalRepository.findById(withdrawalId)
+                .orElseThrow();
+
+        withdrawalRepository.updateStatusById(WithdrawalStatus.PENDING, withdrawalId);
+
+        if (currentWithdrawal.getPaymentAmount() > principalUser.getBalance()) {
+            handleSendTextMessage(SendMessage.builder()
+                    .chatId(chatId)
+                    .text("❌ <b>У вас не хватает баланса для создания заявки на выплату</b>")
+                    .parseMode("html")
+                    .build());
+
+            handleAnswerCallbackQuery(AnswerCallbackQuery.builder().callbackQueryId(callbackQueryId).build());
+            return;
+        }
+
+        userRepository.updateBalanceById(principalUser.getBalance() - currentWithdrawal.getPaymentAmount(),
+                principalUser.getId());
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("✅ <b>Вы успешно опубликовали свою заявку на вывод. Ожидайте подтверждения со стороны администрации</b>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        InlineKeyboardButton acceptReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(AdminCallback.ACCEPT_WITHDRAWAL_CALLBACK + " " + currentWithdrawal.getId())
+                .text("✅ Принять")
+                .build();
+
+        InlineKeyboardButton refuseReplenishmentButton = InlineKeyboardButton.builder()
+                .callbackData(AdminCallback.REFUSE_WITHDRAWAL_CALLBACK + " " + currentWithdrawal.getId())
+                .text("❌ Отклонить")
+                .build();
+
+        keyboardButtonsRow1.add(acceptReplenishmentButton);
+        keyboardButtonsRow1.add(refuseReplenishmentButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        SendMessage sendAdminMessage = SendMessage.builder()
+                .chatId(telegramBotProperty.getChatWithdrawalNotificationChatId())
+                .text("\uD83C\uDF89 <b>Новая заявка на вывод</b>\n\n"
+                + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
+                + "\uD83E\uDEAA <b>Имя:</b> <code>" + firstName + "</code>\n\n"
+                + "\uD83C\uDF10 <b>Адрес в крипто-сети:</b> <code>" + currentWithdrawal.getAddress() + "</code>\n\n"
+                + "ℹ\uFE0F <b>Метод оплаты:</b> <code>" + currentWithdrawal.getPaymentMethod() + "</code>\n"
+                + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + currentWithdrawal.getAmount() + "</code>\n"
+                + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + currentWithdrawal.getPaymentAmount() + "</code>")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build();
+
+        handleSendTextMessage(sendAdminMessage);
+    }
+
+    private void handleCreateWithdrawalRefuse(long chatId, int messageId, long withdrawalId) {
+        withdrawalRepository.deleteById(withdrawalId);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("❌ <b>Вы успешно отменили заявку на выплату</b>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
+    private void handleAdminAcceptReplenishment(long chatId, int messageId, long replenishmentId, String callbackQueryId) {
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .text("Вы успешно приняли этот платеж")
+                .build());
+
+        handleDeleteMessage(DeleteMessage.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .build());
+
+        Replenishment currentReplenishment = replenishmentRepository.findById(replenishmentId)
+                .orElseThrow();
+
+        Order currentOrder = orderRepository.findById(currentReplenishment.getOrderId())
+                .orElseThrow();
+
+        replenishmentRepository.updateStatusById(ReplenishmentStatus.ACCEPTED, replenishmentId);
+
+        handleSendTextMessage(SendMessage.builder()
+                .text("✅ <b>Ваша заявка на оплату заказа</b> <code>\"" + currentOrder.getTitle() + "\"</code> <b>в размере</b> <code>"
+                        + currentReplenishment.getPaymentAmount() + "$</code> <b>была принята</b>")
+                .chatId(userRepository.findTelegramIdById(currentOrder.getCustomerUserId()))
+                .parseMode("html")
+                .build());
+
+        handleSendTextMessage(SendMessage.builder()
+                .text("✅ <b>Заказчик оплатил принятый вами заказ</b> <code>\"" + currentOrder.getTitle() + "\"</code> <b>на сумму</b> <code>" + currentReplenishment.getPaymentAmount() + "$</code>")
+                .chatId(userRepository.findTelegramIdById(currentOrder.getExecutorUserId()))
+                .parseMode("html")
+                .build());
+    }
+
+
+    private void handleAdminRefuseReplenishment(long chatId, int messageId, long replenishmentId, String callbackQueryId) {
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .text("Вы успешно отклонили этот платеж")
+                .build());
+
+        handleDeleteMessage(DeleteMessage.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .build());
+
+        Replenishment currentReplenishment = replenishmentRepository.findById(replenishmentId)
+                .orElseThrow();
+
+        Order currentOrder = orderRepository.findById(currentReplenishment.getOrderId())
+                .orElseThrow();
+
+        replenishmentRepository.updateStatusById(ReplenishmentStatus.REFUSED, replenishmentId);
+
+        handleSendTextMessage(SendMessage.builder()
+                .text("❌ <b>Ваша недавняя заявка на оплату заказа</b> <code>\"" + currentOrder.getTitle() + "\"</code> <b>была отклонена</b>")
+                .chatId(userRepository.findTelegramIdById(currentReplenishment.getUserId()))
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleCreateReplenishmentRefuse(long chatId, int messageId, long replenishmentId) {
+        Replenishment currentReplenishment = replenishmentRepository.findById(replenishmentId)
+                        .orElseThrow();
+
+        replenishmentRepository.delete(currentReplenishment);
+
+        Order currentOrder = orderRepository.findById(currentReplenishment.getOrderId())
+                .orElseThrow();
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("❌ <b>Вы успешно отменили платеж для заказа</b> <code>\"" + currentOrder.getTitle() + "\"</code>")
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
+    private void handleCreateWithdrawalMessage(long chatId) {
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        InlineKeyboardButton createWithdrawalButton = InlineKeyboardButton.builder()
+                .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_CALLBACK)
+                .text("\uD83D\uDCB8 Вывести средства")
+                .build();
+
+        keyboardButtonsRow1.add(createWithdrawalButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        SendMessage message = SendMessage.builder()
+                .text("\uD83D\uDCB8 <b>Вывод средств</b>\n\n"
+                + "Хотите вывести средства со своего баланса? Просто нажмите кнопку ниже, чтобы инициировать процесс вывода средств\n\n"
+                + "\uD83D\uDCBC У нас вы можете легко и безопасно получить доступ к вашим деньгам\n\n"
+                + "\uD83D\uDEE0\uFE0F <b>Не стесняйтесь обращаться в нашу поддержку, если у вас возникли вопросы или вам нужна помощь</b>")
+                .chatId(chatId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build();
+
+        handleSendTextMessage(message);
+    }
+
+    private void handleEditWithdrawalMessage(long chatId, int messageId) {
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        InlineKeyboardButton createWithdrawalButton = InlineKeyboardButton.builder()
+                .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_CALLBACK)
+                .text("\uD83D\uDCB8 Вывести средства")
+                .build();
+
+        keyboardButtonsRow1.add(createWithdrawalButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        EditMessageText editMessageText = EditMessageText.builder()
+                .text("\uD83D\uDCB8 <b>Вывод средств</b>\n\n"
+                        + "Хотите вывести средства со своего баланса? Просто нажмите кнопку ниже, чтобы инициировать процесс вывода средств\n\n"
+                        + "\uD83D\uDCBC У нас вы можете легко и безопасно получить доступ к вашим деньгам\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Не стесняйтесь обращаться в нашу поддержку, если у вас возникли вопросы или вам нужна помощь</b>")
+                .chatId(chatId)
+                .messageId(messageId)
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build();
+
+        handleEditMessageText(editMessageText);
+    }
+
+    private void handleCreateWithdrawalProcess(long chatId, Integer messageId, String text, User principalUser, CreateWithdrawalObject createWithdrawalObject) {
+        switch (createWithdrawalObject.getStep()) {
+            case 1 -> {
+                double amount = Double.parseDouble(text);
+
+                if (amount > principalUser.getBalance()) {
+                    handleSendTextMessage(SendMessage.builder()
+                            .chatId(chatId)
+                            .text("❌ <b>У вас не хватает баланса для подтверждения заявки на выплату</b>")
+                            .parseMode("html")
+                            .build());
+                    return;
+                }
+
+                createWithdrawalObject.setStep(2);
+                createWithdrawalObject.setAmount(amount);
+
+                createWithdrawalSteps.put(principalUser.getId(), createWithdrawalObject);
+
+                handleDeleteMessage(DeleteMessage.builder()
+                        .chatId(chatId)
+                        .messageId(messageId)
+                        .build());
+
+                InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+                List<InlineKeyboardButton> keyboardButtonsRow2 = new ArrayList<>();
+                List<InlineKeyboardButton> keyboardButtonsRow3 = new ArrayList<>();
+                List<InlineKeyboardButton> keyboardButtonsRow4 = new ArrayList<>();
+
+                InlineKeyboardButton createBtcWithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_SELECT_PAYMENT_METHOD_CALLBACK + " " + PaymentMethod.BTC)
+                        .text("BTC")
+                        .build();
+
+                InlineKeyboardButton createLtcWithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_SELECT_PAYMENT_METHOD_CALLBACK + " " + PaymentMethod.LTC)
+                        .text("LTC")
+                        .build();
+
+                InlineKeyboardButton createTrc20WithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_SELECT_PAYMENT_METHOD_CALLBACK + " " + PaymentMethod.TRC20)
+                        .text("TRC20")
+                        .build();
+
+                InlineKeyboardButton backToMainCreateWithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(BackCallback.BACK_TO_MAIN_CREATE_WITHDRAWAL_CALLBACK)
+                        .text("↩\uFE0F Назад")
+                        .build();
+
+                keyboardButtonsRow1.add(createBtcWithdrawalButton);
+                keyboardButtonsRow2.add(createLtcWithdrawalButton);
+                keyboardButtonsRow3.add(createTrc20WithdrawalButton);
+                keyboardButtonsRow4.add(backToMainCreateWithdrawalButton);
+
+                List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                rowList.add(keyboardButtonsRow1);
+                rowList.add(keyboardButtonsRow2);
+                rowList.add(keyboardButtonsRow3);
+                rowList.add(keyboardButtonsRow4);
+
+                inlineKeyboardMarkup.setKeyboard(rowList);
+
+                EditMessageText editMessageText = EditMessageText.builder()
+                        .chatId(chatId)
+                        .replyMarkup(inlineKeyboardMarkup)
+                        .text("\uD83D\uDCB3 <b>Выберите метод выплаты</b>\n\n"
+                        + "Пожалуйста, выберите удобный для вас метод выплаты из списка ниже\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
+                        .parseMode("html")
+                        .messageId(createWithdrawalObject.getBeginMessageId())
+                        .build();
+
+                handleEditMessageText(editMessageText);
+            }
+
+            case 3 -> {
+                createWithdrawalObject.setStep(4);
+
+                createWithdrawalSteps.put(principalUser.getId(), createWithdrawalObject);
+
+                InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+                InlineKeyboardButton backToMainCreateWithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(BackCallback.BACK_TO_MAIN_CREATE_WITHDRAWAL_CALLBACK)
+                        .text("↩\uFE0F Назад")
+                        .build();
+
+                keyboardButtonsRow1.add(backToMainCreateWithdrawalButton);
+
+                List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                rowList.add(keyboardButtonsRow1);
+
+                inlineKeyboardMarkup.setKeyboard(rowList);
+
+                EditMessageText editMessageText = EditMessageText.builder()
+                        .chatId(chatId)
+                        .messageId(createWithdrawalObject.getBeginMessageId())
+                        .text("\uD83C\uDF10 <b>Укажите адрес в крипто-сети</b>\n\n"
+                        + "Теперь, пожалуйста, укажите ваш адрес в указанной ранее криптовалютной сети для получения средств\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
+                        .replyMarkup(inlineKeyboardMarkup)
+                        .parseMode("html")
+                        .build();
+
+                handleEditMessageText(editMessageText);
+            }
+
+            case 4 -> {
+                createWithdrawalSteps.remove(principalUser.getId());
+
+                handleDeleteMessage(DeleteMessage.builder()
+                        .chatId(chatId)
+                        .messageId(messageId)
+                        .build());
+
+                Withdrawal newWithdrawal = Withdrawal.builder()
+                        .status(WithdrawalStatus.IN_PROCESS)
+                        .paymentMethod(createWithdrawalObject.getPaymentMethod())
+                        .paymentAmount(createWithdrawalObject.getAmount())
+                        .address(text)
+                        .userId(principalUser.getId())
+                        .createdAt(System.currentTimeMillis())
+                        .build();
+
+                BigDecimal withdrawalAmount;
+
+                switch (newWithdrawal.getPaymentMethod()) {
+                    case BTC -> {
+                        withdrawalAmount = BigDecimal.valueOf(createWithdrawalObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
+
+                        withdrawalAmount = withdrawalAmount.setScale(7, RoundingMode.HALF_UP);
+
+                        newWithdrawal.setAmount(withdrawalAmount.toPlainString());
+                    }
+                    case LTC -> {
+                        withdrawalAmount = BigDecimal.valueOf(createWithdrawalObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.LTC));
+
+                        withdrawalAmount = withdrawalAmount.setScale(4, RoundingMode.HALF_UP);
+
+                        newWithdrawal.setAmount(withdrawalAmount.toPlainString());
+                    }
+                    case TRC20 -> {
+                        withdrawalAmount = BigDecimal.valueOf(createWithdrawalObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.USDT));
+
+                        withdrawalAmount = withdrawalAmount.setScale(2, RoundingMode.HALF_UP);
+
+                        newWithdrawal.setAmount(withdrawalAmount.toPlainString());
+                    }
+                }
+
+                newWithdrawal = withdrawalRepository.save(newWithdrawal);
+
+                InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+                InlineKeyboardButton acceptWithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_ACCEPT_CALLBACK + " " + newWithdrawal.getId())
+                        .text("✅ Подтвердить")
+                        .build();
+
+                InlineKeyboardButton refuseWithdrawalButton = InlineKeyboardButton.builder()
+                        .callbackData(ExecutorCallback.CREATE_WITHDRAWAL_REFUSE_CALLBACK + " " + newWithdrawal.getId())
+                        .text("❌ Отменить")
+                        .build();
+
+                keyboardButtonsRow1.add(acceptWithdrawalButton);
+                keyboardButtonsRow1.add(refuseWithdrawalButton);
+
+                List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                rowList.add(keyboardButtonsRow1);
+
+                inlineKeyboardMarkup.setKeyboard(rowList);
+
+                EditMessageText editMessageText = EditMessageText.builder()
+                        .chatId(chatId)
+                        .messageId(createWithdrawalObject.getBeginMessageId())
+                        .text("\uD83D\uDCB3 <b>Данные для выплаты</b>\n\n"
+                        + "Вы выбрали метод оплаты: <b>" + newWithdrawal.getPaymentMethod() + "</b>\n\n"
+                        + "\uD83D\uDD39 <b>Адрес получателя:</b> <code>" + newWithdrawal.getAddress() + "</code>\n"
+                        + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + newWithdrawal.getAmount() + "</code>\n"
+                        + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + newWithdrawal.getPaymentAmount() + "</code>\n\n"
+                        + "\uD83D\uDD10 Пожалуйста, убедитесь, что все данные указанные вами верные\n\n"
+                        + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
+                        .replyMarkup(inlineKeyboardMarkup)
+                        .parseMode("html")
+                        .build();
+
+                handleEditMessageText(editMessageText);
+            }
+        }
+    }
+
+    private void handleCreateWithdrawalSelectPaymentMethod(long chatId, PaymentMethod paymentMethod, User principalUser) {
+        CreateWithdrawalObject createWithdrawalObject = createWithdrawalSteps.get(principalUser.getId());
+
+        createWithdrawalObject.setStep(3);
+        createWithdrawalObject.setPaymentMethod(paymentMethod);
+
+        createWithdrawalSteps.put(principalUser.getId(), createWithdrawalObject);
+
+        handleCreateWithdrawalProcess(chatId, null, null, principalUser, createWithdrawalObject);
+    }
+
+    private void handleAdminAcceptWithdrawal(long chatId, int messageId, long withdrawalId, String callbackQueryId) {
+        Withdrawal currentWithdrawal = withdrawalRepository.findById(withdrawalId)
+                .orElseThrow();
+
+        withdrawalRepository.updateStatusById(WithdrawalStatus.ACCEPTED, withdrawalId);
+
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .text("Вы успешно приняли заявку на вывод")
+                .build());
+
+        handleDeleteMessage(DeleteMessage.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .build());
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(userRepository.findTelegramIdById(currentWithdrawal.getUserId()))
+                .text("✅ <b>Ваша заявка на вывод была успешно принята. Средства будут отправлены на ваш криптоадрес в ближайшее время</b>")
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminRefuseWithdrawal(long chatId, int messageId, long withdrawalId, String callbackQueryId) {
+        Withdrawal currentWithdrawal = withdrawalRepository.findById(withdrawalId)
+                .orElseThrow();
+
+        User currentUser = userRepository.findById(currentWithdrawal.getUserId()).orElseThrow();
+
+        userRepository.updateBalanceById(currentUser.getBalance() + currentWithdrawal.getPaymentAmount(),
+                currentUser.getId());
+
+        currentWithdrawal.setStatus(WithdrawalStatus.REFUSED);
+
+        withdrawalRepository.save(currentWithdrawal);
+
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .text("Вы успешно отклонили заявку на вывод")
+                .build());
+
+        handleDeleteMessage(DeleteMessage.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .build());
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(currentUser.getTelegramId())
+                .text("❌ <b>Ваша недавняя заявка на вывод была отклонена</b>")
+                .parseMode("html")
+                .build());
     }
 
     //Sys methods
@@ -1645,6 +2273,16 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                 keyboardRows.add(keyboardRow2);
                 keyboardRows.add(keyboardRow3);
+            }
+
+            case EXECUTOR -> {
+                KeyboardRow keyboardRow2 = new KeyboardRow();
+
+                KeyboardButton withdrawalButton = new KeyboardButton("\uD83D\uDCB8 Вывод средств");
+
+                keyboardRow2.add(withdrawalButton);
+
+                keyboardRows.add(keyboardRow2);
             }
         }
 

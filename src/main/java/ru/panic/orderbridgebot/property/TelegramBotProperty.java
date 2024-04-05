@@ -19,4 +19,5 @@ public class TelegramBotProperty {
     private Long channelChatId;
 
     private Long chatReplenishmentNotificationChatId;
+    private Long chatWithdrawalNotificationChatId;
 }

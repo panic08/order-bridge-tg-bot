@@ -1,6 +1,6 @@
 package ru.panic.orderbridgebot.model.type;
 
-public enum ReplenishmentStatus {
+public enum WithdrawalStatus {
     PENDING,
     IN_PROCESS,
     ACCEPTED,
