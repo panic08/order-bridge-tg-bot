@@ -20,6 +20,9 @@ public interface OrderRepository extends CrudRepository<Order, Long> {
     long countByCustomerUserIdAndOrderStatus(@Param("customerUserId") long customerUserId,
                                                @Param("orderStatus") OrderStatus orderStatus);
 
+    @Query("SELECT COUNT(*) FROM orders_table WHERE order_status = :orderStatus")
+    long countByOrderStatus(@Param("orderStatus") OrderStatus orderStatus);
+
     @Query("SELECT o.* FROM orders_table o WHERE o.customer_user_id = :customerUserId OR o.executor_user_id = :executorUserId"
     + " ORDER BY o.created_at DESC LIMIT :limit OFFSET :offset")
     List<Order> findAllByCustomerUserIdOrExecutorUserIdWithOffsetOrderByCreatedAtDesc(@Param("customerUserId") long customerUserId,
@@ -34,6 +37,16 @@ public interface OrderRepository extends CrudRepository<Order, Long> {
                                                                                     @Param("limit") int limit,
                                                                                     @Param("offset") int offset);
 
+    @Query("SELECT o.* FROM orders_table o WHERE o.order_status = :orderStatus"
+            + " ORDER BY o.created_at DESC LIMIT :limit OFFSET :offset")
+    List<Order> findAllByOrderStatusWithOffsetOrderByCreatedAtDesc(@Param("orderStatus") OrderStatus orderStatus,
+                                                                   @Param("limit") int limit,
+                                                                   @Param("offset") int offset);
+
+    @Query("SELECT o.* FROM orders_table o ORDER BY o.created_at DESC LIMIT :limit OFFSET :offset")
+    List<Order> findAllWithOffsetOrderByCreatedAtDesc(@Param("limit") int limit,
+                                                      @Param("offset") int offset);
+
     @Query("UPDATE orders_table SET last_upped_at = :lastUppedAt WHERE id = :id")
     @Modifying
     void updateLastUppedAtById(@Param("lastUppedAt") long lastUppedAt, @Param("id") long id);
@@ -41,4 +54,8 @@ public interface OrderRepository extends CrudRepository<Order, Long> {
     @Query("UPDATE orders_table SET telegram_channel_message_id = :telegramChannelMessageId WHERE id = :id")
     @Modifying
     void updateTelegramChannelMessageIdById(@Param("telegramChannelMessageId") long telegramChannelMessageId, @Param("id") long id);
+
+    @Query("UPDATE orders_table SET order_status = :orderStatus WHERE id = :id")
+    @Modifying
+    void updateOrderStatusById(@Param("orderStatus") OrderStatus orderStatus, @Param("id") long id);
 }
