@@ -24,6 +24,9 @@ public class User {
 
     private Double balance;
 
+    @Column("account_non_locked")
+    private Boolean isAccountNonLocked;
+
     @Column("registered_at")
     private Long registeredAt;
 }

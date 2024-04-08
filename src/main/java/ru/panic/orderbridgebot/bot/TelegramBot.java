@@ -65,6 +65,10 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final Map<Long, GivePrefixObject> adminGivePrefixSteps = new HashMap<>();
     private final Map<Long, GiveBalanceObject> adminGiveBalanceSteps = new HashMap<>();
     private final Map<Long, Integer> adminGetCurrentUserDataBeginMessageIdSteps = new HashMap<>();
+    private final Map<Long, Integer> adminCreateExecutorPrefixBeginMessageIdSteps = new HashMap<>();
+    private final Map<Long, Integer> adminDeleteExecutorPrefixBeginMessageIdSteps = new HashMap<>();
+    private final Map<Long, Integer> adminBanUserBeginMessageIdSteps = new HashMap<>();
+    private final Map<Long, Integer> adminUnbanUserBeginMessageIdSteps = new HashMap<>();
 
     public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, WithdrawalRepository withdrawalRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
         this.telegramBotProperty = telegramBotProperty;
@@ -117,11 +121,21 @@ public class TelegramBot extends TelegramLongPollingBot {
                                     .balance(0d)
                                     .role(UserRole.CUSTOMER)
                                     .executorPrefixes("[]")
+                                    .isAccountNonLocked(true)
                                     .registeredAt(System.currentTimeMillis())
                                     .build();
 
                             return userRepository.save(newUser);
                         });
+
+                if (!principalUser.getIsAccountNonLocked()) {
+                    handleSendTextMessage(SendMessage.builder()
+                            .chatId(chatId)
+                            .text("\uD83D\uDEAB <b>Вы были заблокированы администратором</b>")
+                            .parseMode("html")
+                            .build());
+                    return;
+                }
 
                 if (text.contains("/start") && text.split(" ").length > 1) {
                     handleTakeOrderMessage(chatId, messageId, principalUser, Long.parseLong(text.split(" ")[1]));
@@ -205,6 +219,32 @@ public class TelegramBot extends TelegramLongPollingBot {
                     return;
                 }
 
+                if (adminCreateExecutorPrefixBeginMessageIdSteps.get(principalUser.getId()) != null) {
+                    handleAdminCreateExecutorPrefixProcess(chatId, messageId, text, principalUser,
+                            adminCreateExecutorPrefixBeginMessageIdSteps.get(principalUser.getId()));
+                    return;
+                }
+
+                if (adminDeleteExecutorPrefixBeginMessageIdSteps.get(principalUser.getId()) != null) {
+                    handleAdminDeleteExecutorPrefixProcess(chatId, messageId, text, principalUser,
+                            adminDeleteExecutorPrefixBeginMessageIdSteps.get(principalUser.getId()));
+                    return;
+                }
+
+                if (adminBanUserBeginMessageIdSteps.get(principalUser.getId()) != null) {
+                    handleAdminBanUserProcess(chatId, messageId, text, principalUser,
+                            adminBanUserBeginMessageIdSteps.get(principalUser.getId()));
+
+                    return;
+                }
+
+                if (adminUnbanUserBeginMessageIdSteps.get(principalUser.getId()) != null) {
+                    handleAdminUnbanUserProcess(chatId, messageId, text, principalUser,
+                            adminUnbanUserBeginMessageIdSteps.get(principalUser.getId()));
+
+                    return;
+                }
+
                 handleUnknownMessage(chatId, principalUser);
 
                 return;
@@ -221,11 +261,26 @@ public class TelegramBot extends TelegramLongPollingBot {
                                     .telegramId(principalTelegramId)
                                     .balance(0d)
                                     .role(UserRole.CUSTOMER)
+                                    .isAccountNonLocked(true)
                                     .registeredAt(System.currentTimeMillis())
                                     .build();
 
                             return userRepository.save(newUser);
                         });
+
+                if (!principalUser.getIsAccountNonLocked()) {
+                    handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                            .callbackQueryId(callbackQueryId)
+                            .build());
+
+                    handleSendTextMessage(SendMessage.builder()
+                            .chatId(chatId)
+                            .text("\uD83D\uDEAB <b>Вы были заблокированы администратором</b>")
+                            .parseMode("html")
+                            .build());
+                    return;
+                }
+
 
                 switch (data) {
                     case "answerQuery" -> {
@@ -234,6 +289,8 @@ public class TelegramBot extends TelegramLongPollingBot {
                                 .build());
                         return;
                     }
+
+
                     case CustomerCallback.CREATE_ORDER_CALLBACK -> {
                         adminCreateOrderSteps.put(principalUser.getId(), CreateOrderObject.builder()
                                 .step(1)
@@ -373,6 +430,26 @@ public class TelegramBot extends TelegramLongPollingBot {
                         return;
                     }
 
+                    case AdminCallback.ADMIN_CREATE_EXECUTOR_PREFIX_CALLBACK -> {
+                        handleAdminCreateExecutorPrefix(chatId, messageId, principalUser);
+                        return;
+                    }
+
+                    case AdminCallback.ADMIN_DELETE_EXECUTOR_PREFIX_CALLBACK -> {
+                        handleAdminDeleteExecutorPrefix(chatId, messageId, principalUser);
+                        return;
+                    }
+
+                    case AdminCallback.ADMIN_BAN_USER_CALLBACK -> {
+                        handleAdminBanUser(chatId, messageId, principalUser);
+                        return;
+                    }
+
+                    case AdminCallback.ADMIN_UNBAN_USER_CALLBACK -> {
+                        handleAdminUnbanUser(chatId, messageId, principalUser);
+                        return;
+                    }
+
                     case BackCallback.BACK_TO_MAIN_CREATE_ORDER_CALLBACK -> {
                         adminCreateOrderSteps.remove(principalUser.getId());
 
@@ -405,6 +482,10 @@ public class TelegramBot extends TelegramLongPollingBot {
                         adminGivePrefixSteps.remove(principalUser.getId());
                         adminGiveBalanceSteps.remove(principalUser.getId());
                         adminGetCurrentUserDataBeginMessageIdSteps.remove(principalUser.getId());
+                        adminCreateExecutorPrefixBeginMessageIdSteps.remove(principalUser.getId());
+                        adminDeleteExecutorPrefixBeginMessageIdSteps.remove(principalUser.getId());
+                        adminBanUserBeginMessageIdSteps.remove(principalUser.getId());
+                        adminUnbanUserBeginMessageIdSteps.remove(principalUser.getId());
 
                         handleEditAdminMessage(chatId, messageId, principalUser);
                     }
@@ -2159,11 +2240,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .build();
 
         InlineKeyboardButton createUserExecutorStatusButton = InlineKeyboardButton.builder()
-                .callbackData("create user exec prefix")
+                .callbackData(AdminCallback.ADMIN_CREATE_EXECUTOR_PREFIX_CALLBACK)
                 .text("➕ Добавить префикс исполнителя")
                 .build();
         InlineKeyboardButton deleteUserExecutorStatusButton = InlineKeyboardButton.builder()
-                .callbackData("remove user exec prefix")
+                .callbackData(AdminCallback.ADMIN_DELETE_EXECUTOR_PREFIX_CALLBACK)
                 .text("➖ Удалить префикс исполнителя")
                 .build();
 
@@ -2178,11 +2259,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .build();
 
         InlineKeyboardButton banUserButton = InlineKeyboardButton.builder()
-                .callbackData("ban user")
+                .callbackData(AdminCallback.ADMIN_BAN_USER_CALLBACK)
                 .text("⬛\uFE0F Заблокировать пользователя")
                 .build();
         InlineKeyboardButton unbanUserButton = InlineKeyboardButton.builder()
-                .callbackData("unban user")
+                .callbackData(AdminCallback.ADMIN_UNBAN_USER_CALLBACK)
                 .text("⬜\uFE0F Разблокировать пользователя")
                 .build();
 
@@ -2271,11 +2352,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .build();
 
         InlineKeyboardButton createUserExecutorStatusButton = InlineKeyboardButton.builder()
-                .callbackData("create user exec prefix")
+                .callbackData(AdminCallback.ADMIN_CREATE_EXECUTOR_PREFIX_CALLBACK)
                 .text("➕ Добавить префикс исполнителя")
                 .build();
         InlineKeyboardButton deleteUserExecutorStatusButton = InlineKeyboardButton.builder()
-                .callbackData("remove user exec prefix")
+                .callbackData(AdminCallback.ADMIN_DELETE_EXECUTOR_PREFIX_CALLBACK)
                 .text("➖ Удалить префикс исполнителя")
                 .build();
 
@@ -2290,11 +2371,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .build();
 
         InlineKeyboardButton banUserButton = InlineKeyboardButton.builder()
-                .callbackData("ban user")
+                .callbackData(AdminCallback.ADMIN_BAN_USER_CALLBACK)
                 .text("⬛\uFE0F Заблокировать пользователя")
                 .build();
         InlineKeyboardButton unbanUserButton = InlineKeyboardButton.builder()
-                .callbackData("unban user")
+                .callbackData(AdminCallback.ADMIN_UNBAN_USER_CALLBACK)
                 .text("⬜\uFE0F Разблокировать пользователя")
                 .build();
 
@@ -3015,7 +3096,12 @@ public class TelegramBot extends TelegramLongPollingBot {
                     .orElseThrow();
         }
 
-        long executorUserId = executorUserOrder.getId();
+        if (currentOrder.getTelegramChannelMessageId() != null) {
+            handleDeleteMessage(DeleteMessage.builder()
+                    .chatId(telegramBotProperty.getChannelChatId())
+                    .messageId(currentOrder.getTelegramChannelMessageId())
+                    .build());
+        }
 
         List<String> prefixes = null;
 
@@ -3534,6 +3620,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 + "TELEGRAM-ID: " + user.getTelegramId() + "\n"
                 + "Роль: " + user.getRole() + "\n"
                 + "Баланс: " + user.getBalance() + "$\n"
+                + "Заблокирован: " + (user.getIsAccountNonLocked() ? "Нет" : "Да") + "\n"
                 + "Дата регистрации: " + formattedDateTime);
 
                 bufferedWriter.newLine();
@@ -3658,6 +3745,266 @@ public class TelegramBot extends TelegramLongPollingBot {
                         + "\uD83D\uDCB3 <b>Баланс:</b> <code>" + currentUser.getBalance() + "$</code>\n\n"
                         + "\uD83D\uDECD <b>Количество открытых заказов:</b> <code>" + currentUserOrdersCount + "</code>\n\n"
                         + "\uD83D\uDD52 <b>Дата регистрации:</b> <code>" + formattedDateTime + "</code>")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminCreateExecutorPrefix(long chatId, int messageId, User principalUser) {
+        adminCreateExecutorPrefixBeginMessageIdSteps.put(principalUser.getId(), messageId);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("➕ <b>Добавить префикс исполнителя</b>\n\n"
+                + "Укажите префикс исполнителя, который вы хотите добавить в систему")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminCreateExecutorPrefixProcess(long chatId, int messageId, String text,
+                                                        User principalUser, int beginMessageId) {
+        adminCreateExecutorPrefixBeginMessageIdSteps.remove(principalUser.getId());
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+        prefixRepository.save(Prefix.builder().name(text).build());
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(beginMessageId)
+                .text("✅ <b>Вы успешно добавили в систему префикс</b> <code>\"" + text + "\"</code>")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminDeleteExecutorPrefix(long chatId, int messageId, User principalUser) {
+        adminDeleteExecutorPrefixBeginMessageIdSteps.put(principalUser.getId(), messageId);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("➕ <b>Удалить префикс исполнителя</b>\n\n"
+                        + "Укажите префикс исполнителя, который вы хотите удалить из системы")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminDeleteExecutorPrefixProcess(long chatId, int messageId, String text,
+                                                 User principalUser, int beginMessageId) {
+        adminDeleteExecutorPrefixBeginMessageIdSteps.remove(principalUser.getId());
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+        prefixRepository.deleteByName(text);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(beginMessageId)
+                .text("✅ <b>Вы успешно удалили из системы префикс</b> <code>\"" + text + "\"</code>")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminBanUser(long chatId, int messageId, User principalUser) {
+        adminBanUserBeginMessageIdSteps.put(principalUser.getId(), messageId);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("⬛\uFE0F <b>Заблокировать пользователя</b>\n\n"
+                        + "Укажите TELEGRAM-ID пользователя, которого вы хотите заблокировать")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminUnbanUser(long chatId, int messageId, User principalUser) {
+        adminUnbanUserBeginMessageIdSteps.put(principalUser.getId(), messageId);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(messageId)
+                .text("⬜\uFE0F <b>Разблокировать пользователя</b>\n\n"
+                        + "Укажите TELEGRAM-ID пользователя, которого вы хотите разблокировать")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminBanUserProcess(long chatId, int messageId, String text,
+                                           User principalUser, int beginMessageId) {
+        long currentUserTelegramId = Long.parseLong(text);
+
+        adminBanUserBeginMessageIdSteps.remove(principalUser.getId());
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+        userRepository.updateIsAccountNonLockedByTelegramId(false, currentUserTelegramId);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(beginMessageId)
+                .text("✅ <b>Вы успешно заблокировали пользователя с TELEGRAM-ID с</b> <code>" + currentUserTelegramId + "</code>")
+                .replyMarkup(inlineKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminUnbanUserProcess(long chatId, int messageId, String text,
+                                             User principalUser, int beginMessageId) {
+        long currentUserTelegramId = Long.parseLong(text);
+
+        adminUnbanUserBeginMessageIdSteps.remove(principalUser.getId());
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+        userRepository.updateIsAccountNonLockedByTelegramId(true, currentUserTelegramId);
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton backToMainAdminButton = InlineKeyboardButton.builder()
+                .callbackData(BackCallback.BACK_TO_MAIN_ADMIN_CALLBACK)
+                .text("↩\uFE0F Назад")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(backToMainAdminButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        handleEditMessageText(EditMessageText.builder()
+                .chatId(chatId)
+                .messageId(beginMessageId)
+                .text("✅ <b>Вы успешно разблокировали пользователя с TELEGRAM-ID с</b> <code>" + currentUserTelegramId + "</code>")
                 .replyMarkup(inlineKeyboardMarkup)
                 .parseMode("html")
                 .build());

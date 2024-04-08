@@ -30,4 +30,9 @@ public interface UserRepository extends CrudRepository<User, Long> {
     @Query("UPDATE users_table SET executor_prefixes = :executorPrefixes WHERE telegram_id = :telegramId")
     @Modifying
     void updateExecutorPrefixesByTelegramId(@Param("executorPrefixes") String executorPrefixes, @Param("telegramId") long telegramId);
+
+    @Query("UPDATE users_table SET account_non_locked = :isAccountNonLocked WHERE telegram_id = :telegramId")
+    @Modifying
+    void updateIsAccountNonLockedByTelegramId(@Param("isAccountNonLocked") boolean isAccountNonLocked,
+                                              @Param("telegramId") long telegramId);
 }

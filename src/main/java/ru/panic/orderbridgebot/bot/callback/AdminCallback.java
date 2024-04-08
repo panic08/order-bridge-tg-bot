@@ -19,4 +19,8 @@ public class AdminCallback {
     public static final String ADMIN_GIVE_BALANCE_CALLBACK = "admin give balance callback";
     public static final String ADMIN_GET_ALL_USER_DATA_CALLBACK = "admin get all user data callback";
     public static final String ADMIN_GET_CURRENT_USER_DATA_CALLBACK = "admin get current admin user data callback";
+    public static final String ADMIN_CREATE_EXECUTOR_PREFIX_CALLBACK = "admin create executor admin prefix callback";
+    public static final String ADMIN_DELETE_EXECUTOR_PREFIX_CALLBACK = "admin delete executor admin prefix callback";
+    public static final String ADMIN_BAN_USER_CALLBACK = "admin ban user callback";
+    public static final String ADMIN_UNBAN_USER_CALLBACK = "admin unban user callback";
 }
