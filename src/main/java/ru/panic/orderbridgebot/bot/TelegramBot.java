@@ -54,6 +54,7 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final PrefixRepository prefixRepository;
     private final ReplenishmentRepository replenishmentRepository;
     private final WithdrawalRepository withdrawalRepository;
+    private final MessageRepository messageRepository;
     private final ObjectMapper objectMapper;
     private final CryptoCurrency cryptoCurrency;
     private final CryptoProperty cryptoProperty;
@@ -69,14 +70,16 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final Map<Long, Integer> adminDeleteExecutorPrefixBeginMessageIdSteps = new HashMap<>();
     private final Map<Long, Integer> adminBanUserBeginMessageIdSteps = new HashMap<>();
     private final Map<Long, Integer> adminUnbanUserBeginMessageIdSteps = new HashMap<>();
+    private final Map<Long, Long> userIdOrderIdJoinedToChats = new HashMap<>();
 
-    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, WithdrawalRepository withdrawalRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
+    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, WithdrawalRepository withdrawalRepository, MessageRepository messageRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
         this.telegramBotProperty = telegramBotProperty;
         this.userRepository = userRepository;
         this.orderRepository = orderRepository;
         this.prefixRepository = prefixRepository;
         this.replenishmentRepository = replenishmentRepository;
         this.withdrawalRepository = withdrawalRepository;
+        this.messageRepository = messageRepository;
         this.objectMapper = objectMapper;
         this.cryptoCurrency = cryptoCurrency;
         this.cryptoProperty = cryptoProperty;
@@ -86,6 +89,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         listOfCommands.add(new BotCommand("/start", "\uD83D\uDD04 Перезапустить"));
         listOfCommands.add(new BotCommand("/profile", "\uD83D\uDC64 Профиль"));
+        listOfCommands.add(new BotCommand("/rules", "\uD83D\uDCDB Правила использования"));
 
         try {
             execute(new SetMyCommands(listOfCommands, new BotCommandScopeDefault(), null));
@@ -140,6 +144,18 @@ public class TelegramBot extends TelegramLongPollingBot {
                 if (text.contains("/start") && text.split(" ").length > 1) {
                     handleTakeOrderMessage(chatId, messageId, principalUser, Long.parseLong(text.split(" ")[1]));
                     return;
+                }else if (text.contains("\uD83E\uDD19 Позвать администратора")) {
+                    handleUserCallAdmin(chatId, messageId, principalUser);
+
+                    return;
+                } else if (text.contains("\uD83D\uDD34 Выйти из текущего чата")) {
+                    handleUserLeaveFromChat(chatId, principalUser);
+                    return;
+                }
+
+                if (userIdOrderIdJoinedToChats.get(principalUser.getId()) != null) {
+                    handleUserSendMessageToChat(chatId, messageId, text, principalUser, userIdOrderIdJoinedToChats.get(principalUser.getId()));
+                    return;
                 }
 
                 switch (text) {
@@ -150,6 +166,11 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                     case "/profile", "\uD83D\uDC64 Профиль" -> {
                         handleProfileMessage(chatId, principalUser, update.getMessage().getFrom().getFirstName());
+                        return;
+                    }
+
+                    case "/rules", "\uD83D\uDCDB Правила использования" -> {
+                        handleRulesMessage(chatId, principalUser);
                         return;
                     }
 
@@ -494,7 +515,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 if (data.contains(BackCallback.BACK_TO_ADMIN_GET_CURRENT_ORDER_CALLBACK)) {
                     long orderId = Long.parseLong(data.split(" ")[7]);
 
-                    handleAdminGetCurrentOrder(chatId, messageId, orderId);
+                    handleAdminGetCurrentOrder(chatId, messageId, orderId, principalUser);
                     return;
                 }
 
@@ -657,7 +678,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 if (data.contains(AdminCallback.ADMIN_GET_CURRENT_ORDER_CALLBACK)) {
                     long orderId = Long.parseLong(data.split(" ")[5]);
 
-                    handleAdminGetCurrentOrder(chatId, messageId, orderId);
+                    handleAdminGetCurrentOrder(chatId, messageId, orderId, principalUser);
                     return;
                 }
 
@@ -688,7 +709,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                     long orderId = Long.parseLong(dataSplitStrings[5]);
                     OrderStatus orderStatus = OrderStatus.valueOf(dataSplitStrings[6]);
 
-                    handleAdminSetOrderStatus(chatId, messageId, callbackQueryId, orderId, orderStatus);
+                    handleAdminSetOrderStatus(chatId, messageId, callbackQueryId, orderId, orderStatus, principalUser);
                     return;
                 }
 
@@ -722,6 +743,24 @@ public class TelegramBot extends TelegramLongPollingBot {
                             principalUser, givePrefixObject);
                     return;
                 }
+
+                if (data.contains(AdminCallback.ADMIN_GET_ALL_CHAT_MESSAGE_CALLBACK)) {
+                    long orderId = Long.parseLong(data.split(" ")[6]);
+
+                    handleAdminGetAllChatMessage(chatId, callbackQueryId, principalUser, orderId);
+                    return;
+                }
+
+                if (data.contains(UserCallback.JOIN_TO_CHAT_CALLBACK)) {
+                    String[] dataSplits = data.split(" ");
+
+                    long userId = Long.parseLong(dataSplits[4]);
+                    long orderId = Long.parseLong(dataSplits[5]);
+
+                    handleUserJoinToChat(chatId, callbackQueryId, principalUser, orderId);
+                    return;
+                }
+
             }
 
         });
@@ -740,7 +779,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
     private void handleStartMessage(long chatId, User principalUser) {
         SendMessage sendMessage = SendMessage.builder()
-                .text("\uD83D\uDC4B Приветствую вас в <b>OrderBridge!</b>\n\n"
+                .text("\uD83D\uDC4B Приветствую вас в <b>NexusProject!</b>\n\n"
                 + "\uD83E\uDD16 <b>Я — ваш персональный помощник по связи между исполнителями и заказчиками.</b>\n\n"
                 + "\uD83C\uDFAF Моя цель - облегчить процесс поиска и выполнения заказов, чтобы ваш бизнес процветал.\n\n"
                 + "\uD83D\uDCAC Не стесняйтесь обращаться ко мне, если у вас есть вопросы или вам нужна помощь.\n\n"
@@ -802,6 +841,37 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .build();
 
         handleSendTextMessage(message);
+    }
+
+    private void handleRulesMessage(long chatId, User principalUser) {
+        switch (principalUser.getRole()) {
+            case EXECUTOR -> {
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(chatId)
+                        .text("\uD83D\uDCDB <b>Правила использования</b>\n\n"
+                                + "Здесь будут правила для заказчика")
+                        .parseMode("html")
+                        .build());
+            }
+
+            case ADMIN -> {
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(chatId)
+                        .text("\uD83D\uDCDB <b>Правила использования</b>\n\n"
+                                + "Здесь будут правила для админа")
+                        .parseMode("html")
+                        .build());
+            }
+
+            case CUSTOMER -> {
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(chatId)
+                        .text("\uD83D\uDCDB <b>Правила использования</b>\n\n"
+                                + "Здесь будут правила для исполнителя")
+                        .parseMode("html")
+                        .build());
+            }
+        }
     }
 
     private void handleCreateOrderMessage(long chatId) {
@@ -1002,7 +1072,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .parseMode("html")
                         .text("\uD83C\uDFAF <b>Выбор префикса для заказа</b>\n\n"
                                 + "Отлично! Теперь давайте выберем подходящий префикс для вашего заказа. Это поможет исполнителям лучше понять, с каким языком программирования или технологией связан ваш проект\n\n"
-                                + "\uD83D\uDD0D <b>Пожалуйста,</b> выберите один из следующих префиксов\n\n"
+                                + "\uD83D\uDD0D <b>Пожалуйста,</b> выберите один или несколько из следующих префиксов. Если вы не уверены, какой именно исполнитель и с какими навыками вам нужен, выбирайте \"Нет понимания\"\n\n"
                                 + "\uD83D\uDEE0\uFE0F <b>Мы готовы перейти к следующему шагу!</b>")
                         .build();
 
@@ -1571,7 +1641,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         //todo chat
         InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
-                .callbackData("open chat ye")
+                .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " " + orderId)
                 .text("\uD83D\uDCAC Открыть чат")
                 .build();
 
@@ -1667,6 +1737,15 @@ public class TelegramBot extends TelegramLongPollingBot {
         Order currentOrder = orderRepository.findById(orderId)
                         .orElseThrow();
 
+        if (currentOrder.getExecutorUserId() != null) {
+            handleSendTextMessage(SendMessage.builder()
+                    .text("❌ <b>Вы не можете взять этот заказ, так как у него уже имеется исполнитель</b>")
+                    .chatId(chatId)
+                    .parseMode("html")
+                    .build());
+            return;
+        }
+
         List<String> currentOrderPrefixes = null;
         List<String> principalUserPrefixes = null;
 
@@ -1677,27 +1756,21 @@ public class TelegramBot extends TelegramLongPollingBot {
             log.warn(e.getMessage());
         }
 
-        for (String currentOrderPrefix : currentOrderPrefixes) {
-            boolean isExist = false;
-
+        firstLoop: for (String currentOrderPrefix : currentOrderPrefixes) {
             for (String principalUserPrefix : principalUserPrefixes) {
                 if (currentOrderPrefix.equals(principalUserPrefix)) {
-                    isExist = true;
-
-                    break;
+                    break firstLoop;
                 }
             }
 
-            if (!isExist) {
-                handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+            handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
 
-                handleSendTextMessage(SendMessage.builder()
-                        .chatId(chatId)
-                        .text("❌ <b>Вы не можете взять этот заказ, так как у вас нету соответствующего префикса(ов)</b>")
-                        .parseMode("html")
-                        .build());
-                return;
-            }
+            handleSendTextMessage(SendMessage.builder()
+                    .chatId(chatId)
+                    .text("❌ <b>Вы не можете взять этот заказ, так как у вас нету соответствующего префикса(ов)</b>")
+                    .parseMode("html")
+                    .build());
+            return;
         }
 
         handleDeleteMessage(DeleteMessage.builder()
@@ -1715,7 +1788,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         //todo chat
         InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
-                .callbackData("open chat")
+                .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " " + orderId)
                 .text("\uD83D\uDCAC Открыть чат")
                 .build();
 
@@ -1765,6 +1838,14 @@ public class TelegramBot extends TelegramLongPollingBot {
                     .chatId(telegramBotProperty.getChannelChatId())
                     .messageId(currentOrder.getTelegramChannelMessageId())
                     .build());
+        }
+
+        if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
+            userIdOrderIdJoinedToChats.remove(currentOrder.getCustomerUserId());
+        }
+
+        if (currentOrder.getExecutorUserId() != null && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+            userIdOrderIdJoinedToChats.remove(currentOrder.getExecutorUserId());
         }
 
         orderRepository.delete(currentOrder);
@@ -1898,7 +1979,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                     case TRC20 -> textForCreateReplenishment.append(cryptoProperty.getTrc20Address()).append("</code>\n");
                 }
 
-                textForCreateReplenishment.append("\uD83D\uDCB0 <b>Сумма:</b> <code>").append(newReplenishment.getAmount()).append("</code>\n\n")
+                textForCreateReplenishment.append("\uD83D\uDCB0 <b>Сумма в ").append(createReplenishmentObject.getPaymentMethod()).append(":</b> <code>").append(newReplenishment.getAmount()).append("</code>\n\n")
                         .append("\uD83D\uDD10 Пожалуйста, используйте указанные выше данные для осуществления платежа\n\n")
                         .append("\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>");
 
@@ -2188,7 +2269,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         SendMessage message = SendMessage.builder()
                 .text("\uD83D\uDCB8 <b>Вывод средств</b>\n\n"
                 + "Хотите вывести средства со своего баланса? Просто нажмите кнопку ниже, чтобы инициировать процесс вывода средств\n\n"
-                + "\uD83D\uDCBC У нас вы можете легко и безопасно получить доступ к вашим деньгам\n\n"
+                + "\uD83D\uDCBC Удобство и безопасность в управлении вашими деньгами - наш приоритет\n\n"
                 + "\uD83D\uDEE0\uFE0F <b>Не стесняйтесь обращаться в нашу поддержку, если у вас возникли вопросы или вам нужна помощь</b>")
                 .chatId(chatId)
                 .replyMarkup(inlineKeyboardMarkup)
@@ -2214,7 +2295,6 @@ public class TelegramBot extends TelegramLongPollingBot {
         List<InlineKeyboardButton> keyboardButtonsRow7 = new ArrayList<>();
         List<InlineKeyboardButton> keyboardButtonsRow8 = new ArrayList<>();
 
-        //todo
         InlineKeyboardButton allOrderButton = InlineKeyboardButton.builder()
                 .callbackData(AdminCallback.ADMIN_GET_ALL_ORDER_CALLBACK + " 1")
                 .text("\uD83D\uDECD Общий список заказов")
@@ -2326,7 +2406,6 @@ public class TelegramBot extends TelegramLongPollingBot {
         List<InlineKeyboardButton> keyboardButtonsRow7 = new ArrayList<>();
         List<InlineKeyboardButton> keyboardButtonsRow8 = new ArrayList<>();
 
-        //todo
         InlineKeyboardButton allOrderButton = InlineKeyboardButton.builder()
                 .callbackData(AdminCallback.ADMIN_GET_ALL_ORDER_CALLBACK + " 1")
                 .text("\uD83D\uDECD Общий список заказов")
@@ -2640,9 +2719,9 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .chatId(chatId)
                         .messageId(createWithdrawalObject.getBeginMessageId())
                         .text("\uD83D\uDCB3 <b>Данные для выплаты</b>\n\n"
-                        + "Вы выбрали метод оплаты: <b>" + newWithdrawal.getPaymentMethod() + "</b>\n\n"
+                        + "Вы выбрали метод выплаты: <b>" + newWithdrawal.getPaymentMethod() + "</b>\n\n"
                         + "\uD83D\uDD39 <b>Адрес получателя:</b> <code>" + newWithdrawal.getAddress() + "</code>\n"
-                        + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + newWithdrawal.getAmount() + "</code>\n"
+                        + "\uD83D\uDCB0 <b>Сумма в " + newWithdrawal.getPaymentMethod() + ":</b> <code>" + newWithdrawal.getAmount() + "</code>\n"
                         + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + newWithdrawal.getPaymentAmount() + "</code>\n\n"
                         + "\uD83D\uDD10 Пожалуйста, убедитесь, что все данные указанные вами верные\n\n"
                         + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
@@ -2901,7 +2980,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         handleEditMessageText(editMessageText);
     }
 
-    private void handleAdminGetCurrentOrder(long chatId, int messageId, long orderId) {
+    private void handleAdminGetCurrentOrder(long chatId, int messageId, long orderId, User principalUser) {
         Order currentOrder = orderRepository.findById(orderId)
                 .orElseThrow();
 
@@ -2975,14 +3054,14 @@ public class TelegramBot extends TelegramLongPollingBot {
         List<InlineKeyboardButton> keyboardButtonsRow4 = new ArrayList<>();
         List<InlineKeyboardButton> keyboardButtonsRow5 = new ArrayList<>();
 
-        //todo
+        //todo chat
         InlineKeyboardButton joinChatMessageButton = InlineKeyboardButton.builder()
-                .callbackData("join chat button")
+                .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " " + orderId)
                 .text("\uD83C\uDF00 Зайти в чат")
                 .build();
 
         InlineKeyboardButton checkAllChatMessageButton = InlineKeyboardButton.builder()
-                .callbackData("check all chat message button")
+                .callbackData(AdminCallback.ADMIN_GET_ALL_CHAT_MESSAGE_CALLBACK + " " + orderId)
                 .text("\uD83C\uDFA6 Просмотр всех сообщений чата")
                 .build();
 
@@ -3046,12 +3125,22 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         User executorUserOrder = null;
 
+        if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
+            userIdOrderIdJoinedToChats.remove(currentOrder.getCustomerUserId());
+        }
+
+        if (currentOrder.getExecutorUserId() != null && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+            userIdOrderIdJoinedToChats.remove(currentOrder.getExecutorUserId());
+        }
+
         if (currentOrder.getExecutorUserId() != null) {
             executorUserOrder = userRepository.findById(currentOrder.getExecutorUserId())
                     .orElseThrow();
         }
 
-        orderRepository.delete(currentOrder);
+        messageRepository.deleteAllById(messageRepository.findAllIdByOrderId(currentOrder.getId()));
+        replenishmentRepository.deleteAllById(replenishmentRepository.findAllIdByOrderId(currentOrder.getId()));
+        orderRepository.deleteById(currentOrder.getId());
 
         handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
                 .callbackQueryId(callbackQueryId)
@@ -3192,7 +3281,8 @@ public class TelegramBot extends TelegramLongPollingBot {
         handleEditMessageText(editMessageText);
     }
 
-    private void handleAdminSetOrderStatus(long chatId, int messageId, String callbackQueryId, long orderId, OrderStatus orderStatus) {
+    private void handleAdminSetOrderStatus(long chatId, int messageId, String callbackQueryId, long orderId, OrderStatus orderStatus,
+                                           User principalUser) {
         Order currentOrder = orderRepository.findById(orderId)
                         .orElseThrow();
 
@@ -3210,7 +3300,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .showAlert(false)
                 .build());
 
-        handleAdminGetCurrentOrder(chatId, messageId, orderId);
+        handleAdminGetCurrentOrder(chatId, messageId, orderId, principalUser);
 
         String orderStatusString = null;
 
@@ -4010,6 +4100,428 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .build());
     }
 
+    private void handleUserJoinToChat(long chatId, String callbackQueryId, User principalUser, long orderId) {
+        if (userIdOrderIdJoinedToChats.get(principalUser.getId()) != null) {
+            handleSendTextMessage(SendMessage.builder()
+                    .chatId(chatId)
+                    .text("\uD83D\uDCAC <b>Вы успешно отключились от текущего чата</b>\n\n"
+                    + "Теперь вы можете дальше пользоваться нашим ботом")
+                    .replyMarkup(getDefaultReplyKeyboardMarkup(principalUser))
+                    .parseMode("html")
+                    .build());
+        }
+
+        userIdOrderIdJoinedToChats.put(principalUser.getId(), orderId);
+
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .showAlert(false)
+                .build());
+
+        ReplyKeyboardMarkup replyKeyboardMarkup = new ReplyKeyboardMarkup();
+        replyKeyboardMarkup.setSelective(true);
+        replyKeyboardMarkup.setResizeKeyboard(true);
+        replyKeyboardMarkup.setOneTimeKeyboard(false);
+
+        KeyboardButton leaveFromChatButton = new KeyboardButton("\uD83D\uDD34 Выйти из текущего чата");
+        KeyboardButton callAdminButton = new KeyboardButton("\uD83E\uDD19 Позвать администратора");
+
+        KeyboardRow keyboardRow1 = new KeyboardRow();
+        KeyboardRow keyboardRow2 = new KeyboardRow();
+
+        keyboardRow1.add(leaveFromChatButton);
+        keyboardRow2.add(callAdminButton);
+
+        List<KeyboardRow> keyboardRows = new ArrayList<>();
+
+        keyboardRows.add(keyboardRow1);
+        keyboardRows.add(keyboardRow2);
+
+        replyKeyboardMarkup.setKeyboard(keyboardRows);
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(chatId)
+                .text("✅\uD83D\uDCAC <b>Вы успешно подключились к текущему чату</b>\n\n"
+                + "Теперь, при отправке любого сообщения в наш бот оно будет анонимно передано вашему собеседнику")
+                .replyMarkup(replyKeyboardMarkup)
+                .parseMode("html")
+                .build());
+
+        if (principalUser.getRole().equals(UserRole.CUSTOMER)) {
+            messageRepository.saveAll(
+                    messageRepository.findAllByOrderIdAndIsCustomerSeen(orderId, false).stream()
+                    .peek(m -> {
+                        UserRole messagerSenderUserRole = userRepository.findRoleById(m.getSenderId());
+
+                        String messageNotifyUser = null;
+
+                        switch (messagerSenderUserRole) {
+                            case CUSTOMER -> messageNotifyUser = "заказчика";
+                            case EXECUTOR -> messageNotifyUser = "исполнителя";
+                            case ADMIN -> messageNotifyUser = "администратора";
+                        }
+
+                        handleSendTextMessage(SendMessage.builder()
+                                .chatId(principalUser.getTelegramId())
+                                .text("\uD83D\uDCAC❗\uFE0F <b>Вы пропустили сообщение от " + messageNotifyUser + " с текстом:</b>\n\n"
+                                + "<i>" + m.getText() + "</i>")
+                                .replyMarkup(replyKeyboardMarkup)
+                                .parseMode("html")
+                                .build());
+                        m.setIsCustomerSeen(true);
+                    }).toList()
+            );
+        } else if (principalUser.getRole().equals(UserRole.EXECUTOR)) {
+            messageRepository.saveAll(
+                    messageRepository.findAllByOrderIdAndIsExecutorSeen(orderId, false).stream()
+                            .peek(m -> {
+                                UserRole messagerSenderUserRole = userRepository.findRoleById(m.getSenderId());
+
+                                String messageNotifyUser = null;
+
+                                switch (messagerSenderUserRole) {
+                                    case CUSTOMER -> messageNotifyUser = "заказчика";
+                                    case EXECUTOR -> messageNotifyUser = "исполнителя";
+                                    case ADMIN -> messageNotifyUser = "администратора";
+                                }
+
+                                handleSendTextMessage(SendMessage.builder()
+                                        .chatId(principalUser.getTelegramId())
+                                        .text("\uD83D\uDCAC❗\uFE0F <b>Вы пропустили сообщение от " + messageNotifyUser + " с текстом:</b>\n\n"
+                                                + "<i>" + m.getText() + "</i>")
+                                        .replyMarkup(replyKeyboardMarkup)
+                                        .parseMode("html")
+                                        .build());
+
+                                m.setIsExecutorSeen(true);
+                            }).toList()
+            );
+        }
+    }
+
+    private void handleUserSendMessageToChat(long chatId, int messageId, String text, User principalUser, long orderId) {
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+        Order currentOrder = orderRepository.findById(orderId)
+                .orElseThrow();
+
+        ReplyKeyboardMarkup replyKeyboardMarkup = new ReplyKeyboardMarkup();
+        replyKeyboardMarkup.setSelective(true);
+        replyKeyboardMarkup.setResizeKeyboard(true);
+        replyKeyboardMarkup.setOneTimeKeyboard(false);
+
+        KeyboardButton leaveFromChatButton = new KeyboardButton("\uD83D\uDD34 Выйти из текущего чата");
+        KeyboardButton callAdminButton = new KeyboardButton("\uD83E\uDD19 Позвать администратора");
+
+        KeyboardRow keyboardRow1 = new KeyboardRow();
+        KeyboardRow keyboardRow2 = new KeyboardRow();
+
+        keyboardRow1.add(leaveFromChatButton);
+        keyboardRow2.add(callAdminButton);
+
+        List<KeyboardRow> keyboardRows = new ArrayList<>();
+
+        keyboardRows.add(keyboardRow1);
+        keyboardRows.add(keyboardRow2);
+
+        replyKeyboardMarkup.setKeyboard(keyboardRows);
+
+        if (currentOrder.getExecutorUserId() == null) {
+            handleSendTextMessage(SendMessage.builder()
+                    .chatId(chatId)
+                    .text("❌\uD83D\uDCAC <b>Вы не можете отправить сообщение в чат, так как вы не имеете активного собеседника (исполнителя)</b>")
+                    .replyMarkup(replyKeyboardMarkup)
+                    .parseMode("html")
+                    .build());
+
+            return;
+        }
+
+        Message newMessage = Message.builder()
+                .senderId(principalUser.getId())
+                .orderId(orderId)
+                .text(text)
+                .build();
+
+        if (currentOrder.getCustomerUserId().equals(principalUser.getId())) {
+            if (userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()) != null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+                newMessage.setIsCustomerSeen(true);
+                newMessage.setIsExecutorSeen(true);
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(userRepository.findTelegramIdById(currentOrder.getExecutorUserId()))
+                        .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от заказчика с текстом:</b>\n\n"
+                                + "<i>" + text + "</i>")
+                        .replyMarkup(replyKeyboardMarkup)
+                        .parseMode("html")
+                        .build());
+            } else {
+                newMessage.setIsCustomerSeen(true);
+                newMessage.setIsExecutorSeen(false);
+            }
+
+            userRepository.findAllIdByRole(UserRole.ADMIN).stream()
+                    .filter(adminId -> userIdOrderIdJoinedToChats.get(adminId) != null &&
+                            userIdOrderIdJoinedToChats.get(adminId).equals(orderId))
+                    .forEach(adminId -> {
+                        handleSendTextMessage(SendMessage.builder()
+                                .chatId(userRepository.findTelegramIdById(adminId))
+                                .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от заказчика с текстом:</b>\n\n"
+                                        + "<i>" + text + "</i>")
+                                .replyMarkup(replyKeyboardMarkup)
+                                .parseMode("html")
+                                .build());
+                    });
+
+        } else if (currentOrder.getExecutorUserId().equals(principalUser.getId())) {
+            if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()) != null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
+                newMessage.setIsExecutorSeen(true);
+                newMessage.setIsCustomerSeen(true);
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(userRepository.findTelegramIdById(currentOrder.getCustomerUserId()))
+                        .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от исполнителя с текстом:</b>\n\n"
+                                + "<i>" + text + "</i>")
+                        .replyMarkup(replyKeyboardMarkup)
+                        .parseMode("html")
+                        .build());
+            } else {
+                newMessage.setIsExecutorSeen(true);
+                newMessage.setIsCustomerSeen(false);
+            }
+
+            userRepository.findAllIdByRole(UserRole.ADMIN).stream()
+                    .filter(adminId -> userIdOrderIdJoinedToChats.get(adminId) != null &&
+                            userIdOrderIdJoinedToChats.get(adminId).equals(orderId))
+                    .forEach(adminId -> {
+                        handleSendTextMessage(SendMessage.builder()
+                                .chatId(userRepository.findTelegramIdById(adminId))
+                                .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от исполнителя с текстом:</b>\n\n"
+                                        + "<i>" + text + "</i>")
+                                .replyMarkup(replyKeyboardMarkup)
+                                .parseMode("html")
+                                .build());
+                    });
+        } else if (principalUser.getRole().equals(UserRole.ADMIN)){
+            if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()) != null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId()) &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()) != null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+                newMessage.setIsExecutorSeen(true);
+                newMessage.setIsCustomerSeen(true);
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(userRepository.findTelegramIdById(currentOrder.getCustomerUserId()))
+                        .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от администратора с текстом:</b>\n\n"
+                                + "<i>" + text + "</i>")
+                        .replyMarkup(replyKeyboardMarkup)
+                        .parseMode("html")
+                        .build());
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(userRepository.findTelegramIdById(currentOrder.getExecutorUserId()))
+                        .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от администратора с текстом:</b>\n\n"
+                                    + "<i>" + text + "</i>")
+                        .replyMarkup(replyKeyboardMarkup)
+                        .parseMode("html")
+                        .build());
+            } else if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()) != null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId()) &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()) == null) {
+                newMessage.setIsCustomerSeen(true);
+                newMessage.setIsExecutorSeen(false);
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(userRepository.findTelegramIdById(currentOrder.getCustomerUserId()))
+                        .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от администратора с текстом:</b>\n\n"
+                                + "<i>" + text + "</i>")
+                        .replyMarkup(replyKeyboardMarkup)
+                        .parseMode("html")
+                        .build());
+            } else if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()) == null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()) != null &&
+                    userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+                newMessage.setIsCustomerSeen(false);
+                newMessage.setIsExecutorSeen(true);
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(userRepository.findTelegramIdById(currentOrder.getExecutorUserId()))
+                        .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от администратора с текстом:</b>\n\n"
+                                + "<i>" + text + "</i>")
+                        .replyMarkup(replyKeyboardMarkup)
+                        .parseMode("html")
+                        .build());
+
+            } else {
+                newMessage.setIsExecutorSeen(false);
+                newMessage.setIsCustomerSeen(false);
+            }
+
+            userRepository.findAllIdByRole(UserRole.ADMIN).stream()
+                    .filter(adminId -> !adminId.equals(principalUser.getId()) &&
+                            userIdOrderIdJoinedToChats.get(adminId) != null &&
+                            userIdOrderIdJoinedToChats.get(adminId).equals(orderId))
+                    .forEach(adminId -> {
+                        handleSendTextMessage(SendMessage.builder()
+                                .chatId(userRepository.findTelegramIdById(adminId))
+                                .text("✅\uD83D\uDC41\u200D\uD83D\uDDE8 <b>Вы получили сообщение от администратора с текстом:</b>\n\n"
+                                        + "<i>" + text + "</i>")
+                                .replyMarkup(replyKeyboardMarkup)
+                                .parseMode("html")
+                                .build());
+                    });
+        }
+
+        newMessage.setSentAt(System.currentTimeMillis());
+
+        System.out.println(newMessage.toString());
+
+        messageRepository.save(newMessage);
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(chatId)
+                .text("✅\uD83D\uDCE9 <b>Вы успешно отправили сообщение собеседнику, с текстом:</b>\n\n"
+                        + "<i>" + text + "</i>")
+                .replyMarkup(replyKeyboardMarkup)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleUserLeaveFromChat(long chatId, User principalUser) {
+        userIdOrderIdJoinedToChats.remove(principalUser.getId());
+
+        handleSendTextMessage(SendMessage.builder()
+                .chatId(chatId)
+                .text("\uD83D\uDCAC <b>Вы успешно отключились от текущего чата</b>\n\n"
+                        + "Теперь вы можете дальше пользоваться нашим ботом")
+                .replyMarkup(getDefaultReplyKeyboardMarkup(principalUser))
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleUserCallAdmin(long chatId, int messageId, User principalUser) {
+        if (userIdOrderIdJoinedToChats.get(principalUser.getId()) == null) {
+            //silence
+            return;
+        }
+
+        long currentOrderId = userIdOrderIdJoinedToChats.get(principalUser.getId());
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+        InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
+                .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " "
+                        + currentOrderId)
+                .text("\uD83D\uDCAC Открыть чат")
+                .build();
+
+        List<InlineKeyboardButton> keyboardButtonsRow1 = new ArrayList<>();
+
+        keyboardButtonsRow1.add(openChatButton);
+
+        List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+        rowList.add(keyboardButtonsRow1);
+
+        inlineKeyboardMarkup.setKeyboard(rowList);
+
+        userRepository.findAllTelegramIdByRole(UserRole.ADMIN).stream()
+                .forEach(adminTelegramId -> {
+                    handleSendTextMessage(SendMessage.builder()
+                            .text("‼\uFE0F <b>Вас позвали, как администратора в чат по заказу с названием</b> <code>\""
+                                    + orderRepository.findTitleById(currentOrderId) + "\"</code>")
+                            .chatId(adminTelegramId)
+                            .replyMarkup(inlineKeyboardMarkup)
+                            .parseMode("html")
+                            .build());
+                });
+
+        handleSendTextMessage(SendMessage.builder()
+                .text("\uD83E\uDD19 <b>Вы успешно позвали администратора в чат</b>\n\n"
+                + "Теперь, ожидайте. Администратор отпишет, как прибудет")
+                .chatId(chatId)
+                .parseMode("html")
+                .build());
+    }
+
+    private void handleAdminGetAllChatMessage(long chatId, String callbackQueryId, User principalUser, long orderId) {
+        handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
+                .callbackQueryId(callbackQueryId)
+                .build());
+
+        Integer loadMessageMessageId = null;
+
+        try {
+            loadMessageMessageId = execute(SendMessage.builder()
+                    .chatId(chatId)
+                    .text("⏳ <b>Загрузка данных всех сообщений чата пользователей...</b>")
+                    .parseMode("html")
+                    .build()).getMessageId();
+        } catch (TelegramApiException ignored) {
+        }
+
+        List<Message> messages = (ArrayList<Message>) messageRepository.findAllByOrderId(orderId);
+        File allDataTempFile = null;
+
+        try {
+            allDataTempFile = Files.createTempFile("allChatMessagesTempFile", ".txt").toFile();
+        } catch (IOException e) {
+            log.warn(e.getMessage());
+        }
+
+        try {
+            FileWriter fileWriter = new FileWriter(allDataTempFile);
+
+            BufferedWriter bufferedWriter = new BufferedWriter(fileWriter);
+
+            for (Message message : messages) {
+                User senderMessageUser = userRepository.findById(message.getSenderId())
+                        .orElseThrow();
+
+                String senderMessageUserRoleString = null;
+
+                switch (senderMessageUser.getRole()) {
+                    case CUSTOMER -> senderMessageUserRoleString = "Заказчик";
+                    case EXECUTOR -> senderMessageUserRoleString = "Исполнитель";
+                    case ADMIN -> senderMessageUserRoleString = "Администратор";
+                }
+
+                LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(message.getSentAt()), ZoneId.systemDefault());
+
+                // Форматирование даты и времени в требуемый формат
+                DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yy в HH:mm");
+                String formattedDateTime = dateTime.format(formatter);
+
+                bufferedWriter.write("_____________________________\n"
+                + "TELEGRAM-ID Отправителя: " + senderMessageUser.getTelegramId() + "\n"
+                + "Текст: " + message.getText() + "\n"
+                + "Роль: " + senderMessageUserRoleString + "\n"
+                + "Дата отправки: " + formattedDateTime);
+
+                bufferedWriter.newLine();
+            }
+
+            bufferedWriter.close();
+        } catch (IOException e) {
+            log.warn(e.getMessage());
+        }
+
+        handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(loadMessageMessageId).build());
+
+        handleSendDocumentMessage(SendDocument.builder()
+                .chatId(chatId)
+                .caption("✅ <b>Данные всех сообщений чата успешно получены</b>")
+                .parseMode("html")
+                .document(new InputFile(allDataTempFile))
+                .build());
+
+        allDataTempFile.delete();
+    }
+
     //Sys methods
 
     private ReplyKeyboardMarkup getDefaultReplyKeyboardMarkup(User principalUser) {
@@ -4019,53 +4531,61 @@ public class TelegramBot extends TelegramLongPollingBot {
         replyKeyboardMarkup.setOneTimeKeyboard(false);
 
         KeyboardButton profileButton = new KeyboardButton("\uD83D\uDC64 Профиль");
+        KeyboardButton rulesButton = new KeyboardButton("\uD83D\uDCDB Правила использования");
 
         KeyboardRow keyboardRow1 = new KeyboardRow();
+        KeyboardRow keyboardRow2 = new KeyboardRow();
 
         keyboardRow1.add(profileButton);
+        keyboardRow2.add(rulesButton);
 
         List<KeyboardRow> keyboardRows = new ArrayList<>();
 
         keyboardRows.add(keyboardRow1);
+        keyboardRows.add(keyboardRow2);
 
         switch (principalUser.getRole()) {
             case CUSTOMER -> {
-                KeyboardRow keyboardRow2 = new KeyboardRow();
+                KeyboardRow keyboardRow3 = new KeyboardRow();
 
                 KeyboardButton createOrderButton = new KeyboardButton("➕ Создать заказ");
                 KeyboardButton myOrdersButton = new KeyboardButton("\uD83D\uDCCB Мои заказы");
 
-                keyboardRow2.add(createOrderButton);
-                keyboardRow2.add(myOrdersButton);
+                keyboardRow3.add(createOrderButton);
+                keyboardRow3.add(myOrdersButton);
 
-                KeyboardRow keyboardRow3 = new KeyboardRow();
+                KeyboardRow keyboardRow4 = new KeyboardRow();
 
                 KeyboardButton createReplenishmentButton = new KeyboardButton("\uD83D\uDCB0 Пополнить заказ");
 
-                keyboardRow3.add(createReplenishmentButton);
+                keyboardRow4.add(createReplenishmentButton);
 
-                keyboardRows.add(keyboardRow2);
                 keyboardRows.add(keyboardRow3);
+                keyboardRows.add(keyboardRow4);
             }
 
             case EXECUTOR -> {
-                KeyboardRow keyboardRow2 = new KeyboardRow();
+                KeyboardRow keyboardRow3 = new KeyboardRow();
+                KeyboardRow keyboardRow4 = new KeyboardRow();
 
+                KeyboardButton myOrdersButton = new KeyboardButton("\uD83D\uDCCB Мои заказы");
                 KeyboardButton withdrawalButton = new KeyboardButton("\uD83D\uDCB8 Вывод средств");
 
-                keyboardRow2.add(withdrawalButton);
+                keyboardRow3.add(myOrdersButton);
+                keyboardRow4.add(withdrawalButton);
 
-                keyboardRows.add(keyboardRow2);
+                keyboardRows.add(keyboardRow3);
+                keyboardRows.add(keyboardRow4);
             }
 
             case ADMIN -> {
-                KeyboardRow keyboardRow2 = new KeyboardRow();
+                KeyboardRow keyboardRow3 = new KeyboardRow();
 
                 KeyboardButton adminPanelButton = new KeyboardButton("\uD83D\uDFE5 Админ-панель");
 
-                keyboardRow2.add(adminPanelButton);
+                keyboardRow3.add(adminPanelButton);
 
-                keyboardRows.add(keyboardRow2);
+                keyboardRows.add(keyboardRow3);
             }
         }
 

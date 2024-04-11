@@ -19,6 +19,13 @@ public class CryptoCurrency {
 
     private Map<CryptoToken, Double> usdPrice = new HashMap<>();
 
+    //Since our server's IP in Coingecko is blocked, we had to use a stub for a while
+    {
+        usdPrice.put(CryptoToken.BTC, 70045.80);
+        usdPrice.put(CryptoToken.LTC, 97.08);
+        usdPrice.put(CryptoToken.USDT, 0.99);
+    }
+
     @Scheduled(fixedDelay = 30000)
     public void updateCryptoCurrency() {
         CoinGeckoGetSimplePriceResponse getCryptosPrice = coinGeckoApi.getCryptosPrice();

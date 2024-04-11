@@ -23,4 +23,5 @@ public class AdminCallback {
     public static final String ADMIN_DELETE_EXECUTOR_PREFIX_CALLBACK = "admin delete executor admin prefix callback";
     public static final String ADMIN_BAN_USER_CALLBACK = "admin ban user callback";
     public static final String ADMIN_UNBAN_USER_CALLBACK = "admin unban user callback";
+    public static final String ADMIN_GET_ALL_CHAT_MESSAGE_CALLBACK = "admin get all chat message callback";
 }

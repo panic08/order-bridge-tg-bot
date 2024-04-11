@@ -47,6 +47,9 @@ public interface OrderRepository extends CrudRepository<Order, Long> {
     List<Order> findAllWithOffsetOrderByCreatedAtDesc(@Param("limit") int limit,
                                                       @Param("offset") int offset);
 
+    @Query("SELECT o.title FROM orders_table o WHERE o.id = :id")
+    String findTitleById(@Param("id") long id);
+
     @Query("UPDATE orders_table SET last_upped_at = :lastUppedAt WHERE id = :id")
     @Modifying
     void updateLastUppedAtById(@Param("lastUppedAt") long lastUppedAt, @Param("id") long id);

@@ -8,6 +8,7 @@ import org.springframework.stereotype.Repository;
 import ru.panic.orderbridgebot.model.User;
 import ru.panic.orderbridgebot.model.type.UserRole;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
@@ -18,6 +19,8 @@ public interface UserRepository extends CrudRepository<User, Long> {
     @Query("SELECT u.telegram_id FROM users_table u WHERE u.id = :id")
     long findTelegramIdById(@Param("id") long id);
 
+    @Query("SELECT u.id FROM users_table u WHERE u.role = :role")
+    List<Long> findAllIdByRole(@Param("role") UserRole role);
 
     @Query("UPDATE users_table SET balance = :balance WHERE id = :id")
     @Modifying
@@ -35,4 +38,10 @@ public interface UserRepository extends CrudRepository<User, Long> {
     @Modifying
     void updateIsAccountNonLockedByTelegramId(@Param("isAccountNonLocked") boolean isAccountNonLocked,
                                               @Param("telegramId") long telegramId);
+
+    @Query("SELECT u.role FROM users_table u WHERE u.id = :id")
+    UserRole findRoleById(@Param("id") long id);
+
+    @Query("SELECT u.telegram_id FROM users_table u WHERE u.role = :role")
+    List<Long> findAllTelegramIdByRole(@Param("role") UserRole role);
 }
