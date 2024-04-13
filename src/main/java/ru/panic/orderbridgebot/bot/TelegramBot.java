@@ -1851,6 +1851,8 @@ public class TelegramBot extends TelegramLongPollingBot {
             userIdOrderIdJoinedToChats.remove(currentOrder.getExecutorUserId());
         }
 
+        messageRepository.deleteAllById(messageRepository.findAllIdByOrderId(currentOrder.getId()));
+        replenishmentRepository.deleteAllById(replenishmentRepository.findAllIdByOrderId(currentOrder.getId()));
         orderRepository.delete(currentOrder);
 
         handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
@@ -3146,7 +3148,7 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         messageRepository.deleteAllById(messageRepository.findAllIdByOrderId(currentOrder.getId()));
         replenishmentRepository.deleteAllById(replenishmentRepository.findAllIdByOrderId(currentOrder.getId()));
-        orderRepository.deleteById(currentOrder.getId());
+        orderRepository.delete(currentOrder);
 
         handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
                 .callbackQueryId(callbackQueryId)
