@@ -1840,11 +1840,14 @@ public class TelegramBot extends TelegramLongPollingBot {
                     .build());
         }
 
-        if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
+        if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()) != null
+                && userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
             userIdOrderIdJoinedToChats.remove(currentOrder.getCustomerUserId());
         }
 
-        if (currentOrder.getExecutorUserId() != null && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+        if (currentOrder.getExecutorUserId() != null
+                && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()) != null
+                && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
             userIdOrderIdJoinedToChats.remove(currentOrder.getExecutorUserId());
         }
 
@@ -3125,11 +3128,14 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         User executorUserOrder = null;
 
-        if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
+        if (userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()) != null
+                && userIdOrderIdJoinedToChats.get(currentOrder.getCustomerUserId()).equals(currentOrder.getId())) {
             userIdOrderIdJoinedToChats.remove(currentOrder.getCustomerUserId());
         }
 
-        if (currentOrder.getExecutorUserId() != null && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
+        if (currentOrder.getExecutorUserId() != null
+                && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()) != null
+                && userIdOrderIdJoinedToChats.get(currentOrder.getExecutorUserId()).equals(currentOrder.getId())) {
             userIdOrderIdJoinedToChats.remove(currentOrder.getExecutorUserId());
         }
 
