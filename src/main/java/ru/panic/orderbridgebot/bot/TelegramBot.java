@@ -1756,13 +1756,18 @@ public class TelegramBot extends TelegramLongPollingBot {
             log.warn(e.getMessage());
         }
 
+        boolean principalHasOneCorrectPrefix = false;
+
         firstLoop: for (String currentOrderPrefix : currentOrderPrefixes) {
             for (String principalUserPrefix : principalUserPrefixes) {
                 if (currentOrderPrefix.equals(principalUserPrefix)) {
+                    principalHasOneCorrectPrefix = true;
                     break firstLoop;
                 }
             }
+        }
 
+        if (!principalHasOneCorrectPrefix) {
             handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
 
             handleSendTextMessage(SendMessage.builder()
@@ -1770,6 +1775,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                     .text("❌ <b>Вы не можете взять этот заказ, так как у вас нету соответствующего префикса(ов)</b>")
                     .parseMode("html")
                     .build());
+
             return;
         }
 
