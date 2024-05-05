@@ -3,6 +3,7 @@ package ru.panic.orderbridgebot.bot;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
@@ -24,6 +25,7 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import ru.panic.orderbridgebot.bot.callback.*;
 import ru.panic.orderbridgebot.bot.pojo.*;
 import ru.panic.orderbridgebot.model.*;
+import ru.panic.orderbridgebot.model.event.DeleteReplenishmentAfterTimeEvent;
 import ru.panic.orderbridgebot.model.type.*;
 import ru.panic.orderbridgebot.payload.type.CryptoToken;
 import ru.panic.orderbridgebot.property.CryptoProperty;
@@ -55,6 +57,7 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final ReplenishmentRepository replenishmentRepository;
     private final WithdrawalRepository withdrawalRepository;
     private final MessageRepository messageRepository;
+    private final DeleteReplenishmentAfterTimeEventRepository deleteReplenishmentAfterTimeEventRepository;
     private final ObjectMapper objectMapper;
     private final CryptoCurrency cryptoCurrency;
     private final CryptoProperty cryptoProperty;
@@ -72,30 +75,35 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final Map<Long, Integer> adminUnbanUserBeginMessageIdSteps = new HashMap<>();
     private final Map<Long, Long> userIdOrderIdJoinedToChats = new HashMap<>();
 
-    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, WithdrawalRepository withdrawalRepository, MessageRepository messageRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
-        this.telegramBotProperty = telegramBotProperty;
-        this.userRepository = userRepository;
-        this.orderRepository = orderRepository;
-        this.prefixRepository = prefixRepository;
-        this.replenishmentRepository = replenishmentRepository;
-        this.withdrawalRepository = withdrawalRepository;
-        this.messageRepository = messageRepository;
-        this.objectMapper = objectMapper;
-        this.cryptoCurrency = cryptoCurrency;
-        this.cryptoProperty = cryptoProperty;
-        this.executorService = executorService;
+    @Value("${replenishment.commission}")
+    private Double replenishmentCommission;
 
-        List<BotCommand> listOfCommands = new ArrayList<>();
 
-        listOfCommands.add(new BotCommand("/start", "\uD83D\uDD04 Перезапустить"));
-        listOfCommands.add(new BotCommand("/profile", "\uD83D\uDC64 Профиль"));
-        listOfCommands.add(new BotCommand("/rules", "\uD83D\uDCDB Правила использования"));
+    public TelegramBot(TelegramBotProperty telegramBotProperty, UserRepository userRepository, OrderRepository orderRepository, PrefixRepository prefixRepository, ReplenishmentRepository replenishmentRepository, WithdrawalRepository withdrawalRepository, MessageRepository messageRepository, DeleteReplenishmentAfterTimeEventRepository deleteReplenishmentAfterTimeEventRepository, ObjectMapper objectMapper, CryptoCurrency cryptoCurrency, CryptoProperty cryptoProperty, ExecutorService executorService) {
+            this.telegramBotProperty = telegramBotProperty;
+            this.userRepository = userRepository;
+            this.orderRepository = orderRepository;
+            this.prefixRepository = prefixRepository;
+            this.replenishmentRepository = replenishmentRepository;
+            this.withdrawalRepository = withdrawalRepository;
+            this.messageRepository = messageRepository;
+            this.deleteReplenishmentAfterTimeEventRepository = deleteReplenishmentAfterTimeEventRepository;
+            this.objectMapper = objectMapper;
+            this.cryptoCurrency = cryptoCurrency;
+            this.cryptoProperty = cryptoProperty;
+            this.executorService = executorService;
+
+            List<BotCommand> listOfCommands = new ArrayList<>();
+
+            listOfCommands.add(new BotCommand("/start", "\uD83D\uDD04 Перезапустить"));
+            listOfCommands.add(new BotCommand("/profile", "\uD83D\uDC64 Профиль"));
+            listOfCommands.add(new BotCommand("/rules", "\uD83D\uDCDB Правила сервиса"));
 
         try {
             execute(new SetMyCommands(listOfCommands, new BotCommandScopeDefault(), null));
         } catch (TelegramApiException e) {
             log.warn(e.getMessage());
-        }
+        };
     }
 
     @Override
@@ -116,12 +124,14 @@ public class TelegramBot extends TelegramLongPollingBot {
                 String text = update.getMessage().getText();
                 long chatId = update.getMessage().getChatId();
                 long principalTelegramId = update.getMessage().getFrom().getId();
+                String principalUsername = update.getMessage().getFrom().getUserName();
                 int messageId = update.getMessage().getMessageId();
 
                 User principalUser = userRepository.findByTelegramId(principalTelegramId)
                         .orElseGet(() -> {
                             User newUser = User.builder()
                                     .telegramId(principalTelegramId)
+                                    .telegramUsername(principalUsername)
                                     .balance(0d)
                                     .role(UserRole.CUSTOMER)
                                     .executorPrefixes("[]")
@@ -131,6 +141,12 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                             return userRepository.save(newUser);
                         });
+
+                if (!principalUsername.equals(principalUser.getTelegramUsername())) {
+                    principalUser.setTelegramUsername(principalUsername);
+
+                    userRepository.save(principalUser);
+                }
 
                 if (!principalUser.getIsAccountNonLocked()) {
                     handleSendTextMessage(SendMessage.builder()
@@ -169,7 +185,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                         return;
                     }
 
-                    case "/rules", "\uD83D\uDCDB Правила использования" -> {
+                    case "/rules", "\uD83D\uDCDB Правила сервиса" -> {
                         handleRulesMessage(chatId, principalUser);
                         return;
                     }
@@ -272,14 +288,16 @@ public class TelegramBot extends TelegramLongPollingBot {
             } else if (update.hasCallbackQuery()) {
                 long chatId = update.getCallbackQuery().getMessage().getChatId();
                 int messageId = update.getCallbackQuery().getMessage().getMessageId();
+                long principalTelegramId = update.getCallbackQuery().getFrom().getId();
+                String principalUsername = update.getCallbackQuery().getFrom().getUserName();
                 String callbackQueryId = update.getCallbackQuery().getId();
                 String data = update.getCallbackQuery().getData();
-                long principalTelegramId = update.getCallbackQuery().getFrom().getId();
 
                 User principalUser = userRepository.findByTelegramId(principalTelegramId)
                         .orElseGet(() -> {
                             User newUser = User.builder()
                                     .telegramId(principalTelegramId)
+                                    .telegramUsername(principalUsername)
                                     .balance(0d)
                                     .role(UserRole.CUSTOMER)
                                     .isAccountNonLocked(true)
@@ -288,6 +306,12 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                             return userRepository.save(newUser);
                         });
+
+                if (!principalUsername.equals(principalUser.getTelegramUsername())) {
+                    principalUser.setTelegramUsername(principalUsername);
+
+                    userRepository.save(principalUser);
+                }
 
                 if (!principalUser.getIsAccountNonLocked()) {
                     handleAnswerCallbackQuery(AnswerCallbackQuery.builder()
@@ -830,7 +854,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         SendMessage message = SendMessage.builder()
                 .text("\uD83D\uDC64 <b>Профиль</b>\n\n"
                         + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
-                        + "\uD83E\uDEAA <b>Имя:</b> <code>" + username + "</code>\n"
+                        + "\uD83E\uDEAA <b>Username:</b> @" + principalUser.getTelegramUsername() + "\n"
                         + "\uD83C\uDFAD <b>Роль:</b> <code>" + principalUserRole + "</code>\n"
                         + executorStatusString
                         + "\uD83D\uDCB3 <b>Баланс:</b> <code>" + principalUser.getBalance() + "$</code>\n\n"
@@ -845,29 +869,90 @@ public class TelegramBot extends TelegramLongPollingBot {
 
     private void handleRulesMessage(long chatId, User principalUser) {
         switch (principalUser.getRole()) {
-            case EXECUTOR -> {
-                handleSendTextMessage(SendMessage.builder()
-                        .chatId(chatId)
-                        .text("\uD83D\uDCDB <b>Правила использования</b>\n\n"
-                                + "Здесь будут правила для заказчика")
-                        .parseMode("html")
-                        .build());
-            }
-
-            case ADMIN -> {
-                handleSendTextMessage(SendMessage.builder()
-                        .chatId(chatId)
-                        .text("\uD83D\uDCDB <b>Правила использования</b>\n\n"
-                                + "Здесь будут правила для админа")
-                        .parseMode("html")
-                        .build());
-            }
-
             case CUSTOMER -> {
                 handleSendTextMessage(SendMessage.builder()
                         .chatId(chatId)
-                        .text("\uD83D\uDCDB <b>Правила использования</b>\n\n"
-                                + "Здесь будут правила для исполнителя")
+                        .text("\uD83D\uDCDB <b>Правила сервиса</b>\n\n"
+                                + "<blockquote><b><i>1. Соглашение с правилами:</i></b></blockquote>\n"
+                        + "• При использовании бота вы автоматически соглашаетесь с правилами сервиса.\n" +
+                                "• Правила могут изменяться без оповещений.\n" +
+                                "• Незнание, не освобождает от ответственности!\n\n"
+                        + "<blockquote><b><i>2. Правила общения в чате заказа:</i></b></blockquote>\n"
+                        + "• Исполнитель имеет право отказаться от выполнения заказа до начала работы над ним.\n" +
+                                "• После начала выполнения заказа исполнителем, отказ от разработки возможен только при согласии исполнителя с данной инициативой без необходимости дополнительного обсуждения или при предоставлении веских обоснованных причин заказчиком, которые он должен предоставить администрации для рассмотрения.\n" +
+                                "• Запрещено использование нецензурной лексики и обсуждение тем, не относящихся к заказу или IT-сфере.\n" +
+                                "• Запрещено передавать или запрашивать личные данные в чате. Например: username, id, номер, либо другие данные связанные с вами/собеседником.\n" +
+                                "• При общении должна сохраняться полноценная анонимность.\n" +
+                                "• Возможность передачи файлов и изображений в чате отключена. Рекомендуется использовать файлообменники, такие как dropmefiles.com, fex.net или же другие популярные сервисы.\n" +
+                                "• Оскорбительное или неуважительное общение в сторону исполнителя или администрации ведет к предупреждению. \n" +
+                                "5 предупреждений - прекращение предоставлений услуг сервиса и блокировка.\n" +
+                                "• Все обсуждения заказов и вопросы касательно выполнения работ должны проходить внутри чата заказа. Запрещается общение вне контекста заказа.\n" +
+                                "• В случае неудачной договоренности с исполнителем относительно цены или других вопросов, вы можете обратиться к администратору, чтобы он закрыл чат с вашим текущим собеседником, тем самым данный заказ вновь станет активным для поиска исполнителя.\n" +
+                                "• Только администратор имеет право завершить заказ и закрыть чат.\n" +
+                                "• Если результат разработки вас удовлетворяет, вы можете вызвать администратора для завершения сделки. Также, в случае отсутствия обоснованных причин от заказчика в течение 2 дней после получения результата разработки, указывающих на проблемы в разработанном софте, исполнитель имеет право обратиться к администратору для закрытия сделки.\n" +
+                                "• В случае возникновения спорных ситуаций между исполнителем и заказчиком, администрация сервиса имеет право выступить в роли посредника и принять решение на основе представленных доказательств.\n" +
+                                "• Сервис оставляет за собой право отказать в предоставлении услуг без объяснения причин.\n" +
+                                "• Администрация вправе блокировать или ограничивать доступ к сервису в случае наличия соответствующих причин.\n\n"
+                        + "<blockquote><b><i>3. Оплата и возврат средств:</i></b></blockquote>\n"
+                        + "• Оплата за заказ производится в полном объеме согласно обговоренной сумме с исполнителем во время общения. Эти средства помещаются в холд до момента, когда исполнитель предоставит результаты разработки. Если оплата уже была произведена, но стороны не достигли соглашения по условиям, предпочтениям или техническому заданию, сумма остается на временном холде до поиска нового исполнителя. Однако вы имеете право запросить обратный вывод средств из холда. При этом может взиматься комиссия за обратную транзакцию в соответствии с минимальными ставками комиссии, в зависимости от выбранной криптовалюты.\n" +
+                                "• Если исполнитель уже приступил к выполнению вашего заказа, а вы решите отказаться от него, сервис может удержать оплату на временном холде до разрешения возможного спора. Однако, если исполнитель согласен на закрытие сделки без дополнительных обсуждений, эта мера может быть исключена.\n\n")
+                        .parseMode("html")
+                        .build());
+
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(chatId)
+                        .text("<blockquote><b><i>4. Как происходит оплата заказа:</i></b></blockquote>\n"
+                        + "• Вы обсуждаете все вопросы, касающиеся цены и технического задания с исполнителем.\n" +
+                                "• По завершении обсуждения, вы выходите из чата, нажав кнопку \"Выйти из текущего чата\" в главном меню.\n" +
+                                "• В главном меню нажимаете на кнопку \"\uD83D\uDCB0 Пополнить заказ\"\n" +
+                                "• Выбираете нужный заказ для оплаты\n" +
+                                "• Указываете оговоренную сумму заказа с исполнителем\n" +
+                                "Пожалуйста, указывайте полную сумму заказа, равную 100%. Эти средства будут сохранены на вашем балансе в холде и не будут переданы исполнителю до момента вашего согласия с результатом работы.\n" +
+                                "• Выбираете удобный для вас способ оплаты\n" +
+                                "• После этого вы получите адрес для перевода средств и сумму в выбранной криптовалютной монете. Пожалуйста, следуйте указанным реквизитам при формировании платежа. Любые ошибки в указании адреса и переводе средств на другой кошелёк, могут привести к невозможности возврата средств, никакие просьбы или возмущения не будут рассмотрены! При неверной сумме перевода, заказ считается не полноценно оплаченным и потребуется дополнительно оплатить оставшуюся сумму. Убедительная просьба, несколько раз проверить реквизиты, на которые вы переводите средства, а также сумму перевода, чтобы избежать ошибок.\n" +
+                                "• После проведения платежа, ожидайте подтверждения оплаты администрацией. По завершении процедуры оплаты, как вам, так и исполнителю, будет отправлено уведомление о успешной оплате.\n" +
+                                "\n" +
+                                "❗\uFE0FПри создании платежа сообщение с указанными реквизитами и суммой активно только в течение 15 минут, после чего оно автоматически удаляется. Если вы оставили это сообщение на более чем 15 минут и только потом начали проводить оплату, сервис проверит сумму поступления. Если она меньше оговоренной, администрация имеет право пересчитать сумму и предоставить информацию о недостающей сумме. Мы просим вас при создании платежа сразу оплачивать счёт, чтобы избежать подобных ситуаций и лишних обсуждений.\n\n"
+                        + "<b>Более детальные условия и правила сервиса - <a href=\"https://telegra.ph/Pravila-i-usloviya-raboty-v-NexusProject-dlya-ispolnitelej-04-22\">telegraph</a></b>\n"
+                        + "<b>Техподдержка - @tekerosi</b>")
+                        .parseMode("html")
+                        .build());
+            }
+
+            case EXECUTOR -> {
+                handleSendTextMessage(SendMessage.builder()
+                        .chatId(chatId)
+                        .text("\uD83D\uDCDB <b>Правила сервиса</b>\n\n"
+                                + "<blockquote><b><i>1. Соглашение с правилами:</i></b></blockquote>\n"
+                                + "• При использовании бота вы автоматически соглашаетесь с правилами сервиса.\n"
+                                + "• Правила могут изменяться без оповещений.\n"
+                                + "• Незнание, не освобождает от ответственности!\n\n"
+                        + "<blockquote><b><i>2. Комиссия за пользование сервисом:</i></b></blockquote>\n"
+                        + "• За каждый заказ взимается комиссия в размере 7%.\n"
+                        + "• Минимальная комиссия составляет 7$.\n"
+                        + "• Если комиссия в размере 7% от суммы заказа составляет менее 7$, то взимается минимальная сумма - 7$.\n"
+                        + "• При заказе на сумму менее 25$, комиссия обговаривается индивидуально с исполнителем.\n"
+                        + "• При формировании суммы для заказчика вы имеете возможность учесть взимаемые 7% комиссионных, чтобы это не влияло на ваш доход. Например, если вы хотите получить 200$ за разработку, можете предложить заказчику сумму в 214$, включив в неё комиссию.\n\n"
+                        + "<blockquote><b><i>3. Правила общения в чате заказа:</i></b></blockquote>\n"
+                        + "• Исполнитель имеет право отказаться от выполнения заказа до начала работы над ним.\n"
+                        + "• После начала выполнения заказа, отказ от него возможен только при согласовании с заказчиком или в случае предоставления веских обоснованных причин, которые исполнитель должен предоставить администрации для рассмотрения.\n"
+                        + "• Запрещено использование нецензурной лексики и обсуждение тем, не относящихся к заказу или IT-сфере.\n"
+                        + "• Запрещено передавать или запрашивать личные данные в чате. Например: username, id, номер, либо другие данные связанные с вами/собеседником.\n"
+                        + "• При общении должна сохраняться полноценная анонимность.\n"
+                        + "• Возможность передачи файлов и изображений в чате отключена. Рекомендуется использовать файлообменники, такие как dropmefiles.com, fex.net или же другие популярные сервисы.\n"
+                        + "• Оскорбительное или неуважительное общение в сторону заказчика или администрации ведет к предупреждению. 5 предупреждений приводят к потере роли исполнителя.\n"
+                        + "• Исполнитель обязуется завершить заказ в установленный срок. В случае невыполнения заказа в срок, исполнителю может быть выдано предупреждение за задержку. Однако, предупреждение будет выдано только в том случае, если заказчик уже выражает недовольство и требует объяснений относительно задержки. Если же задержка или сдвиг сроков согласована с заказчиком, предупреждение не будет вынесено.\n"
+                        + "• Все обсуждения заказов и вопросы касательно выполнения работ должны проходить внутри чата заказа. Запрещается общение вне контекста заказа.\n"
+                        + "• Если не удалось договориться с заказчиком о цене или других вопросах, можно вызвать админа, чтобы он закрыл чат с собеседником.\n"
+                        + "• Только администратор имеет право завершить заказ и закрыть чат.\n"
+                        + "• Исполнитель обязуется соблюдать конфиденциальность информации, предоставленной заказчиком, и не передавать её третьим лицам.\n"
+                        + "• Зачисление средств на баланс за выполненные заказы осуществляется после того, как заказчик одобрит результаты работы.\n"
+                        + "• В случае возникновения спорных ситуаций между исполнителем и заказчиком, администрация сервиса имеет право выступить в роли посредника и принять решение на основе представленных доказательств.\n\n"
+                        + "<blockquote><b><i>4. Вывод средств:</i></b></blockquote>\n"
+                        + "• Если вы указали неправильные реквизиты при формировании заявки на вывод средств, а администрация уже подтвердила операцию, никакие просьбы или возмущения не будут рассмотрены. Убедительная просьба, несколько раз проверить свой криптовалютный адрес при создании заявки!\n"
+                        + "• Вывод средств осуществляется в указанной вами сумме в USD$, независимо от курса криптовалюты, которую вы выбрали.\n\n"
+                        + "<b>Более детальные условия и правила сервиса - <a href=\"https://telegra.ph/Pravila-i-usloviya-raboty-v-NexusProject-dlya-ispolnitelej-04-22\">telegraph</a></b>\n"
+                        + "<b>Техподдержка - @tekerosi</b>")
                         .parseMode("html")
                         .build());
             }
@@ -1639,7 +1724,6 @@ public class TelegramBot extends TelegramLongPollingBot {
             keyboardButtonsRow1.add(upOrderButton);
         }
 
-        //todo chat
         InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
                 .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " " + orderId)
                 .text("\uD83D\uDCAC Открыть чат")
@@ -1792,7 +1876,6 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
 
-        //todo chat
         InlineKeyboardButton openChatButton = InlineKeyboardButton.builder()
                 .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " " + orderId)
                 .text("\uD83D\uDCAC Открыть чат")
@@ -1874,6 +1957,36 @@ public class TelegramBot extends TelegramLongPollingBot {
             case 1 -> {
                 double amount = Double.parseDouble(text);
 
+                if (amount < 1) {
+                    InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+
+                    List<InlineKeyboardButton> keyboardButtonsRow = new ArrayList<>();
+
+                    InlineKeyboardButton backToMainCreateReplenishmentButton = InlineKeyboardButton.builder()
+                            .callbackData(BackCallback.BACK_TO_MAIN_CREATE_REPLENISHMENT_CALLBACK)
+                            .text("↩\uFE0F Назад")
+                            .build();
+
+                    keyboardButtonsRow.add(backToMainCreateReplenishmentButton);
+
+                    List<List<InlineKeyboardButton>> rowList = new ArrayList<>();
+
+                    rowList.add(keyboardButtonsRow);
+
+                    inlineKeyboardMarkup.setKeyboard(rowList);
+
+                    handleDeleteMessage(DeleteMessage.builder().chatId(chatId).messageId(messageId).build());
+
+                    handleEditMessageText(EditMessageText.builder()
+                            .chatId(chatId)
+                            .messageId(createReplenishmentObject.getBeginMessageId())
+                            .text("❌ <b>Сумма оплаты должна быть положительным числом</b>")
+                            .replyMarkup(inlineKeyboardMarkup)
+                            .parseMode("html")
+                            .build());
+                    return;
+                }
+
                 createReplenishmentObject.setStep(2);
                 createReplenishmentObject.setAmount(amount);
 
@@ -1943,18 +2056,20 @@ public class TelegramBot extends TelegramLongPollingBot {
                 Replenishment newReplenishment = Replenishment.builder()
                         .userId(principalUser.getId())
                         .orderId(createReplenishmentObject.getOrderId())
-                        .paymentAmount(createReplenishmentObject.getAmount())
+                        .paymentAmount(createReplenishmentObject.getAmount() * replenishmentCommission)
                         .status(ReplenishmentStatus.PENDING)
                         .method(createReplenishmentObject.getPaymentMethod())
                         .createdAt(System.currentTimeMillis())
                         .build();
 
 
-                BigDecimal replenishmentAmount = null;
+                BigDecimal replenishmentAmount;
 
                 switch (createReplenishmentObject.getPaymentMethod()) {
                     case BTC -> {
                         replenishmentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.BTC));
+
+                        replenishmentAmount = replenishmentAmount.multiply(BigDecimal.valueOf(replenishmentCommission));
 
                         replenishmentAmount = replenishmentAmount.setScale(7, RoundingMode.HALF_UP);
 
@@ -1963,12 +2078,16 @@ public class TelegramBot extends TelegramLongPollingBot {
                     case LTC -> {
                         replenishmentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.LTC));
 
+                        replenishmentAmount = replenishmentAmount.multiply(BigDecimal.valueOf(replenishmentCommission));
+
                         replenishmentAmount = replenishmentAmount.setScale(4, RoundingMode.HALF_UP);
 
                         newReplenishment.setAmount(replenishmentAmount.toPlainString());
                     }
                     case TRC20 -> {
                         replenishmentAmount = BigDecimal.valueOf(createReplenishmentObject.getAmount() / cryptoCurrency.getUsdPrice().get(CryptoToken.USDT));
+
+                        replenishmentAmount = replenishmentAmount.multiply(BigDecimal.valueOf(replenishmentCommission));
 
                         replenishmentAmount = replenishmentAmount.setScale(2, RoundingMode.HALF_UP);
 
@@ -2025,6 +2144,13 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .parseMode("html")
                         .build();
 
+                deleteReplenishmentAfterTimeEventRepository.save(DeleteReplenishmentAfterTimeEvent.builder()
+                        .replenishmentId(newReplenishment.getId())
+                        .telegramChatId(chatId)
+                        .telegramMessageId(createReplenishmentObject.getBeginMessageId())
+                        .deletedAt(System.currentTimeMillis() + 900000)
+                        .build());
+
                 handleEditMessageText(editMessageText);
             }
         }
@@ -2049,6 +2175,8 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .orElseThrow();
 
         replenishmentRepository.updateStatusById(ReplenishmentStatus.IN_PROCESS, replenishmentId);
+
+        deleteReplenishmentAfterTimeEventRepository.deleteByReplenishmentId(replenishmentId);
 
         EditMessageText editMessageText = EditMessageText.builder()
                 .chatId(chatId)
@@ -2086,12 +2214,12 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .chatId(telegramBotProperty.getChatReplenishmentNotificationChatId())
                 .replyMarkup(inlineKeyboardMarkup)
                 .text("\uD83C\uDF89 <b>Новая заявка на пополнение</b>\n\n"
-                + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
-                + "\uD83E\uDEAA <b>Имя:</b> <code>" + firstName + "</code>\n\n"
-                + "\uD83D\uDD24 <b>Заголовок заказа:</b> <code>" + currentOrder.getTitle() + "</code>\n\n"
-                + "ℹ\uFE0F <b>Метод оплаты:</b> <code>" + currentReplenishment.getMethod() + "</code>\n"
-                + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + currentReplenishment.getAmount() + "</code>\n"
-                + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + currentReplenishment.getPaymentAmount() + "</code>")
+                        + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
+                        + "\uD83D\uDD17 <b>Username:</b> @" + principalUser.getTelegramUsername() + "\n\n"
+                        + "\uD83D\uDD24 <b>Заголовок заказа:</b> <code>" + currentOrder.getTitle() + "</code>\n\n"
+                        + "ℹ\uFE0F <b>Метод оплаты:</b> <code>" + currentReplenishment.getMethod() + "</code>\n"
+                        + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + currentReplenishment.getAmount() + "</code>\n"
+                        + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + currentReplenishment.getPaymentAmount() + "</code>")
                 .parseMode("html")
                 .build();
 
@@ -2154,12 +2282,12 @@ public class TelegramBot extends TelegramLongPollingBot {
         SendMessage sendAdminMessage = SendMessage.builder()
                 .chatId(telegramBotProperty.getChatWithdrawalNotificationChatId())
                 .text("\uD83C\uDF89 <b>Новая заявка на вывод</b>\n\n"
-                + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
-                + "\uD83E\uDEAA <b>Имя:</b> <code>" + firstName + "</code>\n\n"
-                + "\uD83C\uDF10 <b>Адрес в крипто-сети:</b> <code>" + currentWithdrawal.getAddress() + "</code>\n\n"
-                + "ℹ\uFE0F <b>Метод оплаты:</b> <code>" + currentWithdrawal.getPaymentMethod() + "</code>\n"
-                + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + currentWithdrawal.getAmount() + "</code>\n"
-                + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + currentWithdrawal.getPaymentAmount() + "</code>")
+                        + "\uD83D\uDD11 <b>ID:</b> <code>" + principalUser.getTelegramId() + "</code>\n"
+                        + "\uD83E\uDEAA <b>Username:</b> @" + principalUser.getTelegramUsername() + "\n\n"
+                        + "\uD83C\uDF10 <b>Адрес в крипто-сети:</b> <code>" + currentWithdrawal.getAddress() + "</code>\n\n"
+                        + "ℹ\uFE0F <b>Метод оплаты:</b> <code>" + currentWithdrawal.getPaymentMethod() + "</code>\n"
+                        + "\uD83D\uDCB0 <b>Сумма:</b> <code>" + currentWithdrawal.getAmount() + "</code>\n"
+                        + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + currentWithdrawal.getPaymentAmount() + "</code>")
                 .replyMarkup(inlineKeyboardMarkup)
                 .parseMode("html")
                 .build();
@@ -2193,6 +2321,36 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         Replenishment currentReplenishment = replenishmentRepository.findById(replenishmentId)
                 .orElseThrow();
+
+        currentReplenishment.setPaymentAmount(currentReplenishment.getPaymentAmount() / replenishmentCommission);
+
+        BigDecimal currentReplenishmentAmount = new BigDecimal(currentReplenishment.getAmount());
+
+        switch (currentReplenishment.getMethod()) {
+            case BTC -> {
+                currentReplenishmentAmount = currentReplenishmentAmount.divide(BigDecimal.valueOf(replenishmentCommission));
+
+                currentReplenishmentAmount = currentReplenishmentAmount.setScale(7, RoundingMode.HALF_UP);
+
+                currentReplenishment.setAmount(currentReplenishmentAmount.toPlainString());
+            }
+            case LTC -> {
+                currentReplenishmentAmount = currentReplenishmentAmount.divide(BigDecimal.valueOf(replenishmentCommission));
+
+                currentReplenishmentAmount = currentReplenishmentAmount.setScale(4, RoundingMode.HALF_UP);
+
+                currentReplenishment.setAmount(currentReplenishmentAmount.toPlainString());
+            }
+            case TRC20 -> {
+                currentReplenishmentAmount = currentReplenishmentAmount.divide(BigDecimal.valueOf(replenishmentCommission));
+
+                currentReplenishmentAmount = currentReplenishmentAmount.setScale(2, RoundingMode.HALF_UP);
+
+                currentReplenishment.setAmount(currentReplenishmentAmount.toPlainString());
+            }
+        }
+
+        currentReplenishment = replenishmentRepository.save(currentReplenishment);
 
         Order currentOrder = orderRepository.findById(currentReplenishment.getOrderId())
                 .orElseThrow();
@@ -2243,6 +2401,8 @@ public class TelegramBot extends TelegramLongPollingBot {
     private void handleCreateReplenishmentRefuse(long chatId, int messageId, long replenishmentId) {
         Replenishment currentReplenishment = replenishmentRepository.findById(replenishmentId)
                         .orElseThrow();
+
+        deleteReplenishmentAfterTimeEventRepository.deleteByReplenishmentId(currentReplenishment.getId());
 
         replenishmentRepository.delete(currentReplenishment);
 
@@ -2732,7 +2892,6 @@ public class TelegramBot extends TelegramLongPollingBot {
                         .text("\uD83D\uDCB3 <b>Данные для выплаты</b>\n\n"
                         + "Вы выбрали метод выплаты: <b>" + newWithdrawal.getPaymentMethod() + "</b>\n\n"
                         + "\uD83D\uDD39 <b>Адрес получателя:</b> <code>" + newWithdrawal.getAddress() + "</code>\n"
-                        + "\uD83D\uDCB0 <b>Сумма в " + newWithdrawal.getPaymentMethod() + ":</b> <code>" + newWithdrawal.getAmount() + "</code>\n"
                         + "\uD83D\uDCB5 <b>Сумма в USD:</b> <code>" + newWithdrawal.getPaymentAmount() + "</code>\n\n"
                         + "\uD83D\uDD10 Пожалуйста, убедитесь, что все данные указанные вами верные\n\n"
                         + "\uD83D\uDEE0\uFE0F <b>Если у вас возникли вопросы или вам нужна помощь, не стесняйтесь обращаться в нашу поддержку</b>")
@@ -3028,10 +3187,12 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         StringBuilder getCurrentOrderTextMessage = new StringBuilder()
                 .append("\uD83D\uDCDD <b>Информация о заказе</b>\n\n")
-                .append("\uD83C\uDD94 <b>ID создателя заказа:</b> <code>").append(customerOrderUser.getTelegramId()).append("</code>\n");
+                .append("\uD83C\uDD94 <b>ID создателя заказа:</b> <code>").append(customerOrderUser.getTelegramId()).append("</code>\n")
+                .append("\uD83D\uDD17 <b>Username создателя заказа:</b> @").append(customerOrderUser.getTelegramUsername()).append("\n");
 
         if (executorOrderUser != null) {
-            getCurrentOrderTextMessage.append("\uD83C\uDD94 <b>ID исполнителя заказа:</b> <code>").append(executorOrderUser.getTelegramId()).append("</code>\n\n");
+            getCurrentOrderTextMessage.append("\uD83C\uDD94 <b>ID исполнителя заказа:</b> <code>").append(executorOrderUser.getTelegramId()).append("</code>\n")
+                    .append("\uD83D\uDD17 <b>Username исполнителя заказа:</b> @").append(executorOrderUser.getTelegramUsername()).append("\n\n");
         } else {
             getCurrentOrderTextMessage.append("\n");
         }
@@ -3065,7 +3226,6 @@ public class TelegramBot extends TelegramLongPollingBot {
         List<InlineKeyboardButton> keyboardButtonsRow4 = new ArrayList<>();
         List<InlineKeyboardButton> keyboardButtonsRow5 = new ArrayList<>();
 
-        //todo chat
         InlineKeyboardButton joinChatMessageButton = InlineKeyboardButton.builder()
                 .callbackData(UserCallback.JOIN_TO_CHAT_CALLBACK + " " + principalUser.getId() + " " + orderId)
                 .text("\uD83C\uDF00 Зайти в чат")
@@ -3720,12 +3880,13 @@ public class TelegramBot extends TelegramLongPollingBot {
                 String formattedDateTime = dateTime.format(formatter);
 
                 bufferedWriter.write("_________________________________\n"
-                + "ID: " + user.getId() + "\n"
-                + "TELEGRAM-ID: " + user.getTelegramId() + "\n"
-                + "Роль: " + user.getRole() + "\n"
-                + "Баланс: " + user.getBalance() + "$\n"
-                + "Заблокирован: " + (user.getIsAccountNonLocked() ? "Нет" : "Да") + "\n"
-                + "Дата регистрации: " + formattedDateTime);
+                        + "ID: " + user.getId() + "\n"
+                        + "TELEGRAM-ID: " + user.getTelegramId() + "\n"
+                        + "TELEGRAM-USERNAME: @" + user.getTelegramUsername() + "\n"
+                        + "Роль: " + user.getRole() + "\n"
+                        + "Баланс: " + user.getBalance() + "$\n"
+                        + "Заблокирован: " + (user.getIsAccountNonLocked() ? "Нет" : "Да") + "\n"
+                        + "Дата регистрации: " + formattedDateTime);
 
                 bufferedWriter.newLine();
             }
@@ -3789,7 +3950,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         User currentUser = userRepository.findByTelegramId(telegramId)
                 .orElse(null);
 
-        LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(principalUser.getRegisteredAt()), ZoneId.systemDefault());
+        LocalDateTime dateTime = LocalDateTime.ofInstant(Instant.ofEpochMilli(currentUser.getRegisteredAt()), ZoneId.systemDefault());
 
         // Форматирование даты и времени в требуемый формат
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yy в HH:mm");
@@ -3844,6 +4005,7 @@ public class TelegramBot extends TelegramLongPollingBot {
                 .messageId(beginMessageId)
                 .text("\uD83E\uDDFE <b>Проверить пользователя</b>\n\n"
                         + "\uD83D\uDD11 <b>ID:</b> <code>" + currentUser.getTelegramId() + "</code>\n"
+                        + "\uD83D\uDD17 <b>Username:</b> @" + currentUser.getTelegramUsername() + "\n"
                         + "\uD83C\uDFAD <b>Роль:</b> <code>" + currentUserRole + "</code>\n"
                         + executorStatusString
                         + "\uD83D\uDCB3 <b>Баланс:</b> <code>" + currentUser.getBalance() + "$</code>\n\n"
@@ -4390,8 +4552,6 @@ public class TelegramBot extends TelegramLongPollingBot {
 
         newMessage.setSentAt(System.currentTimeMillis());
 
-        System.out.println(newMessage.toString());
-
         messageRepository.save(newMessage);
 
         handleSendTextMessage(SendMessage.builder()
@@ -4511,10 +4671,11 @@ public class TelegramBot extends TelegramLongPollingBot {
                 String formattedDateTime = dateTime.format(formatter);
 
                 bufferedWriter.write("_____________________________\n"
-                + "TELEGRAM-ID Отправителя: " + senderMessageUser.getTelegramId() + "\n"
-                + "Текст: " + message.getText() + "\n"
-                + "Роль: " + senderMessageUserRoleString + "\n"
-                + "Дата отправки: " + formattedDateTime);
+                        + "TELEGRAM-ID Отправителя: " + senderMessageUser.getTelegramId() + "\n"
+                        + "TELEGRAM-USERNAME: @" + senderMessageUser.getTelegramUsername() + "\n"
+                        + "Текст: " + message.getText() + "\n"
+                        + "Роль: " + senderMessageUserRoleString + "\n"
+                        + "Дата отправки: " + formattedDateTime);
 
                 bufferedWriter.newLine();
             }
@@ -4545,25 +4706,26 @@ public class TelegramBot extends TelegramLongPollingBot {
         replyKeyboardMarkup.setOneTimeKeyboard(false);
 
         KeyboardButton profileButton = new KeyboardButton("\uD83D\uDC64 Профиль");
-        KeyboardButton rulesButton = new KeyboardButton("\uD83D\uDCDB Правила использования");
 
         KeyboardRow keyboardRow1 = new KeyboardRow();
-        KeyboardRow keyboardRow2 = new KeyboardRow();
 
         keyboardRow1.add(profileButton);
-        keyboardRow2.add(rulesButton);
 
         List<KeyboardRow> keyboardRows = new ArrayList<>();
 
         keyboardRows.add(keyboardRow1);
-        keyboardRows.add(keyboardRow2);
 
         switch (principalUser.getRole()) {
             case CUSTOMER -> {
+                KeyboardRow keyboardRow2 = new KeyboardRow();
                 KeyboardRow keyboardRow3 = new KeyboardRow();
+
+                KeyboardButton rulesButton = new KeyboardButton("\uD83D\uDCDB Правила сервиса");
 
                 KeyboardButton createOrderButton = new KeyboardButton("➕ Создать заказ");
                 KeyboardButton myOrdersButton = new KeyboardButton("\uD83D\uDCCB Мои заказы");
+
+                keyboardRow2.add(rulesButton);
 
                 keyboardRow3.add(createOrderButton);
                 keyboardRow3.add(myOrdersButton);
@@ -4574,32 +4736,38 @@ public class TelegramBot extends TelegramLongPollingBot {
 
                 keyboardRow4.add(createReplenishmentButton);
 
+                keyboardRows.add(keyboardRow2);
                 keyboardRows.add(keyboardRow3);
                 keyboardRows.add(keyboardRow4);
             }
 
             case EXECUTOR -> {
+                KeyboardRow keyboardRow2 = new KeyboardRow();
                 KeyboardRow keyboardRow3 = new KeyboardRow();
                 KeyboardRow keyboardRow4 = new KeyboardRow();
+
+                KeyboardButton rulesButton = new KeyboardButton("\uD83D\uDCDB Правила сервиса");
 
                 KeyboardButton myOrdersButton = new KeyboardButton("\uD83D\uDCCB Мои заказы");
                 KeyboardButton withdrawalButton = new KeyboardButton("\uD83D\uDCB8 Вывод средств");
 
+                keyboardRow2.add(rulesButton);
                 keyboardRow3.add(myOrdersButton);
                 keyboardRow4.add(withdrawalButton);
 
+                keyboardRows.add(keyboardRow2);
                 keyboardRows.add(keyboardRow3);
                 keyboardRows.add(keyboardRow4);
             }
 
             case ADMIN -> {
-                KeyboardRow keyboardRow3 = new KeyboardRow();
+                KeyboardRow keyboardRow2 = new KeyboardRow();
 
                 KeyboardButton adminPanelButton = new KeyboardButton("\uD83D\uDFE5 Админ-панель");
 
-                keyboardRow3.add(adminPanelButton);
+                keyboardRow2.add(adminPanelButton);
 
-                keyboardRows.add(keyboardRow3);
+                keyboardRows.add(keyboardRow2);
             }
         }
 

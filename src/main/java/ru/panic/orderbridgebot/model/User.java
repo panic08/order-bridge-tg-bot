@@ -17,6 +17,9 @@ public class User {
     @Column("telegram_id")
     private Long telegramId;
 
+    @Column("telegram_username")
+    private String telegramUsername;
+
     @Column("executor_prefixes")
     private String executorPrefixes;
 
